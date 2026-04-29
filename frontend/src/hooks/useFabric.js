@@ -1,11 +1,17 @@
 import { useEffect, useRef } from "react";
 import { fabric } from "fabric";
 import { useEditor } from "../context/EditorContext.jsx";
+import { ensureFabricEraserSupport } from "../utils/fabricEraserSupport.js";
 import { assignObjectMeta, fitImageToCanvas } from "../utils/fabricHelpers.js";
 
-export default function useFabric(canvasElementRef, imageUrl) {
+export default function useFabric(canvasElementRef, imageUrl, options = {}) {
   const fabricCanvasRef = useRef(null);
   const { setCanvas, setActiveObject, syncObjects } = useEditor();
+  const { skipInitialImageLoad = false } = options;
+
+  useEffect(() => {
+    void ensureFabricEraserSupport();
+  }, []);
 
   useEffect(() => {
     if (!canvasElementRef.current || fabricCanvasRef.current) {
@@ -18,35 +24,36 @@ export default function useFabric(canvasElementRef, imageUrl) {
       backgroundColor: "#0f172a",
       preserveObjectStacking: true,
       selection: true,
+      skipTargetFind: false,
       fireRightClick: false,
     });
 
-    fabricCanvasRef.current = canvas;
-    setCanvas(canvas);
-
-    const handleSelection = () => {
+    const syncSelection = () => {
       setActiveObject(canvas.getActiveObject() || null);
       syncObjects(canvas);
     };
 
-    const handleMutation = () => {
+    const syncMutation = () => {
       syncObjects(canvas);
     };
 
-    canvas.on("selection:created", handleSelection);
-    canvas.on("selection:updated", handleSelection);
-    canvas.on("selection:cleared", handleSelection);
-    canvas.on("object:added", handleMutation);
-    canvas.on("object:removed", handleMutation);
-    canvas.on("object:modified", handleMutation);
+    fabricCanvasRef.current = canvas;
+    setCanvas(canvas);
+
+    canvas.on("selection:created", syncSelection);
+    canvas.on("selection:updated", syncSelection);
+    canvas.on("selection:cleared", syncSelection);
+    canvas.on("object:added", syncMutation);
+    canvas.on("object:removed", syncMutation);
+    canvas.on("object:modified", syncMutation);
 
     return () => {
-      canvas.off("selection:created", handleSelection);
-      canvas.off("selection:updated", handleSelection);
-      canvas.off("selection:cleared", handleSelection);
-      canvas.off("object:added", handleMutation);
-      canvas.off("object:removed", handleMutation);
-      canvas.off("object:modified", handleMutation);
+      canvas.off("selection:created", syncSelection);
+      canvas.off("selection:updated", syncSelection);
+      canvas.off("selection:cleared", syncSelection);
+      canvas.off("object:added", syncMutation);
+      canvas.off("object:removed", syncMutation);
+      canvas.off("object:modified", syncMutation);
       canvas.dispose();
       fabricCanvasRef.current = null;
       setCanvas(null);
@@ -56,26 +63,40 @@ export default function useFabric(canvasElementRef, imageUrl) {
   useEffect(() => {
     const canvas = fabricCanvasRef.current;
 
-    if (!canvas || !imageUrl) {
+    if (!canvas) {
+      return undefined;
+    }
+
+    canvas.clear();
+    canvas.setBackgroundColor("#0f172a", canvas.requestRenderAll.bind(canvas));
+    setActiveObject(null);
+
+    if (skipInitialImageLoad) {
+      syncObjects(canvas);
+      return undefined;
+    }
+
+    if (!imageUrl) {
+      syncObjects(canvas);
       return undefined;
     }
 
     let isCancelled = false;
-    canvas.clear();
-    canvas.setBackgroundColor("#0f172a", canvas.requestRenderAll.bind(canvas));
 
     fabric.Image.fromURL(imageUrl, (image) => {
-      if (isCancelled) {
+      if (isCancelled || !image) {
         return;
       }
 
-      assignObjectMeta(image, "Base Image", "image");
+      assignObjectMeta(image, "Object 1", "image");
+      fitImageToCanvas(image, canvas);
       image.set({
         selectable: true,
         evented: true,
-        hasControls: true,
+        erasable: true,
       });
-      fitImageToCanvas(image, canvas);
+      image.setCoords();
+
       canvas.add(image);
       canvas.setActiveObject(image);
       setActiveObject(image);
@@ -86,7 +107,7 @@ export default function useFabric(canvasElementRef, imageUrl) {
     return () => {
       isCancelled = true;
     };
-  }, [imageUrl, setActiveObject, syncObjects]);
+  }, [imageUrl, setActiveObject, skipInitialImageLoad, syncObjects]);
 
   return fabricCanvasRef;
 }

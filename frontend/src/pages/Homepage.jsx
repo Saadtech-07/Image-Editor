@@ -4,23 +4,24 @@ import { ArrowRight, ImagePlus, Loader2, UploadCloud, WandSparkles } from "lucid
 import Header from "../components/layout/Header.jsx";
 import { removeBackground } from "../utils/imageHelpers.js";
 
+
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 function PreviewPanel({ title, imageUrl, emptyLabel, isProcessed }) {
   return (
-    <section className="glass-panel flex min-h-[420px] flex-col rounded-lg p-4">
+    <section className="bg-white rounded-xl shadow-lg border border-gray-200 p-6 flex min-h-[420px] flex-col">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">{title}</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-600">{title}</h2>
         {isProcessed ? (
-          <span className="rounded-lg bg-teal-300/[0.15] px-3 py-1 text-xs font-semibold text-teal-200">PNG</span>
+          <span className="rounded-lg bg-green-100 px-3 py-1 text-xs font-semibold text-green-700">PNG</span>
         ) : null}
       </div>
-
-      <div className="checkerboard mt-4 grid flex-1 place-items-center overflow-hidden rounded-lg border border-white/10">
+        
+      <div className="checkerboard mt-4 grid flex-1 place-items-center overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
         {imageUrl ? (
           <img src={imageUrl} alt={title} className="max-h-[520px] w-full object-contain" />
         ) : (
-          <p className="px-6 text-center text-sm text-slate-400">{emptyLabel}</p>
+          <p className="px-6 text-center text-sm text-gray-400">{emptyLabel}</p>
         )}
       </div>
     </section>
@@ -84,15 +85,15 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-gradient-to-br from-white via-gray-50 to-blue-50 text-gray-900">
       <Header onUpload={onUpload} />
 
-      <main className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+      <main className="w-full px-4 py-10 sm:px-6 lg:px-8">
         <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.28em] text-teal-300">Preview</p>
-            <h1 className="mt-3 text-3xl font-bold text-white sm:text-4xl">Upload, remove background, then edit</h1>
-            <p className="mt-3 max-w-2xl text-slate-300">
+            <p className="text-sm font-semibold uppercase tracking-[0.28em] text-blue-600">Preview</p>
+            <h1 className="mt-3 text-3xl font-bold text-gray-900 sm:text-4xl">Upload, remove background, then edit</h1>
+            <p className="mt-3 max-w-2xl text-gray-600">
               Compare the uploaded image with the transparent result before opening the editor.
             </p>
           </div>
@@ -102,7 +103,7 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/[0.12] bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/[0.15]"
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-md transition hover:-translate-y-0.5 hover:bg-gray-50"
             >
               <ImagePlus size={18} />
               Upload Image
@@ -111,7 +112,7 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
               type="button"
               onClick={handleRemoveBackground}
               disabled={!imageState.originalFile || isRemoving}
-              className="inline-flex items-center gap-2 rounded-lg bg-teal-300 px-4 py-2 text-sm font-bold text-slate-950 shadow-glow transition hover:-translate-y-0.5 hover:bg-teal-200 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isRemoving ? <Loader2 className="animate-spin" size={18} /> : <WandSparkles size={18} />}
               Remove Background
@@ -120,7 +121,7 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
               type="button"
               onClick={() => navigate("/editor")}
               disabled={!imageState.processedUrl}
-              className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-bold text-slate-950 shadow-lg shadow-black/20 transition hover:-translate-y-0.5 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-green-500 px-4 py-2 text-sm font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Open Editor
               <ArrowRight size={18} />
@@ -139,15 +140,15 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
             }}
             onDragLeave={() => setIsDragging(false)}
             className={`grid min-h-[460px] w-full place-items-center rounded-lg border border-dashed p-8 text-center transition ${
-              isDragging ? "border-teal-200 bg-teal-300/10" : "border-white/[0.16] bg-white/[0.04] hover:bg-white/[0.07]"
+              isDragging ? "border-blue-400 bg-blue-50" : "border-gray-300 bg-white hover:bg-gray-50"
             }`}
           >
             <span>
-              <span className="mx-auto grid h-16 w-16 place-items-center rounded-lg bg-teal-300 text-slate-950">
+              <span className="mx-auto grid h-16 w-16 place-items-center rounded-lg bg-blue-500 text-white">
                 <UploadCloud size={28} />
               </span>
-              <span className="mt-5 block text-xl font-semibold text-white">Drop an image here or browse</span>
-              <span className="mt-2 block text-sm text-slate-400">PNG, JPG, WEBP, or any browser-supported image file</span>
+              <span className="mt-5 block text-xl font-semibold text-gray-900">Drop an image here or browse</span>
+              <span className="mt-2 block text-sm text-gray-600">PNG, JPG, WEBP, or any browser-supported image file</span>
             </span>
           </button>
         ) : (
@@ -163,7 +164,7 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
         )}
 
         {error ? (
-          <div className="mt-5 rounded-lg border border-rose-300/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+          <div className="mt-5 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
           </div>
         ) : null}

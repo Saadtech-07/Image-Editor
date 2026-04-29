@@ -1,15 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { fabric } from "fabric";
 import { ArrowLeft, ImagePlus } from "lucide-react";
-import Toolbar from "../components/editor/Toolbar.jsx";
-import LayersPanel from "../components/editor/LayersPanel.jsx";
+import LeftSidebar from "../components/editor/LeftSidebar.jsx";
+import FloatingToolbar from "../components/editor/FloatingToolbar.jsx";
+import TopBar from "../components/editor/TopBar.jsx";
+import RightPanel from "../components/editor/RightPanel.jsx";
 import { useEditor } from "../context/EditorContext.jsx";
 import useFabric from "../hooks/useFabric.js";
+import ToolManager from "../tools/ToolManager.js";
+import CropTool from "../tools/CropTool.js";
+import DrawTool from "../tools/DrawTool.js";
+import EraserTool from "../tools/EraserTool.js";
+import { loadStoredEditorSession, saveStoredEditorSession } from "../utils/editorStorage.js";
+import { ensureFabricEraserSupport, hasFabricEraserSupport } from "../utils/fabricEraserSupport.js";
 import {
+  FABRIC_SERIALIZATION_PROPS,
   assignObjectMeta,
   cloneFabricObject,
+  fitImageToCanvas,
+  getBaseImageObject,
   getNextObjectName,
+  getSelectedOrBaseImageObject,
   removeObjectFromCanvas,
 } from "../utils/fabricHelpers.js";
 
@@ -17,6 +29,17 @@ const shapeStyles = {
   fill: "rgba(45, 212, 191, 0.76)",
   stroke: "#ccfbf1",
   strokeWidth: 2,
+};
+
+const INITIAL_TOOL_SETTINGS = {
+  draw: {
+    color: "#2dd4bf",
+    size: 6,
+  },
+  eraser: {
+    size: 24,
+    inverted: false,
+  },
 };
 
 function MissingImageState() {
@@ -42,238 +65,471 @@ function MissingImageState() {
 
 export default function Editor({ imageUrl }) {
   const canvasElementRef = useRef(null);
-  useFabric(canvasElementRef, imageUrl);
+  const canvasContainerRef = useRef(null);
+  const toolManagerRef = useRef(null);
+  const historyRef = useRef([]);
+  const historyIndexRef = useRef(-1);
+  const isRestoringHistoryRef = useRef(false);
+  const restoredSessionRef = useRef(false);
+  const baseImageIdRef = useRef(null);
+  const baseImageInitializedRef = useRef(false);
+  const storedSession = useMemo(() => loadStoredEditorSession(imageUrl), [imageUrl]);
 
-  const { canvas, activeObject, setActiveObject, syncObjects } = useEditor();
+  useFabric(canvasElementRef, imageUrl, {
+    skipInitialImageLoad: Boolean(storedSession),
+  });
+
+  const { canvas, objects, activeObject, setActiveObject, syncObjects } = useEditor();
   const [activeTool, setActiveTool] = useState("select");
-  const [cropReady, setCropReady] = useState(false);
-  const cropStartRef = useRef(null);
-  const cropRectRef = useRef(null);
+  const [toolSettings, setToolSettings] = useState(INITIAL_TOOL_SETTINGS);
+  const [toolMessage, setToolMessage] = useState("");
+  const [eraserSupported, setEraserSupported] = useState(() => hasFabricEraserSupport());
+  const [zoom, setZoom] = useState(1);
+  const [history, setHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
 
-  const restoreObjectInteractivity = useCallback(
-    (enabled) => {
-      canvas?.getObjects().forEach((fabricObject) => {
-        if (!fabricObject.excludeFromLayer) {
-          fabricObject.set({
-            selectable: enabled,
-            evented: enabled,
-          });
-        }
+  useEffect(() => {
+    let isMounted = true;
+
+    void ensureFabricEraserSupport().then((supported) => {
+      if (isMounted) {
+        setEraserSupported(supported);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    historyRef.current = history;
+    historyIndexRef.current = historyIndex;
+  }, [history, historyIndex]);
+
+  useEffect(() => {
+    setHistory([]);
+    setHistoryIndex(-1);
+    historyRef.current = [];
+    historyIndexRef.current = -1;
+    restoredSessionRef.current = false;
+    baseImageIdRef.current = null;
+    baseImageInitializedRef.current = false;
+    setToolMessage("");
+    setActiveTool("select");
+  }, [imageUrl]);
+
+  const persistEditorSession = useCallback(
+    (targetCanvas, serializedCanvas) => {
+      if (!targetCanvas) {
+        return;
+      }
+
+      const activeObjectId = targetCanvas.getActiveObject()?.editorId || null;
+
+      saveStoredEditorSession({
+        sourceImageUrl: imageUrl,
+        canvas: serializedCanvas || JSON.stringify(targetCanvas.toJSON(FABRIC_SERIALIZATION_PROPS)),
+        zoom: targetCanvas.getZoom(),
+        viewportTransform: Array.isArray(targetCanvas.viewportTransform)
+          ? [...targetCanvas.viewportTransform]
+          : null,
+        activeObjectId,
+        baseImageId: baseImageIdRef.current,
       });
+    },
+    [imageUrl],
+  );
+
+  const snapshotCanvas = useCallback(
+    (targetCanvas = canvas) => {
+      if (!targetCanvas || isRestoringHistoryRef.current) {
+        return;
+      }
+
+      const snapshot = JSON.stringify(targetCanvas.toJSON(FABRIC_SERIALIZATION_PROPS));
+      const nextHistoryBase = historyRef.current.slice(0, historyIndexRef.current + 1);
+
+      if (nextHistoryBase[nextHistoryBase.length - 1] === snapshot) {
+        return;
+      }
+
+      const nextHistory = [...nextHistoryBase, snapshot].slice(-50);
+      const nextIndex = nextHistory.length - 1;
+
+      historyRef.current = nextHistory;
+      historyIndexRef.current = nextIndex;
+      setHistory(nextHistory);
+      setHistoryIndex(nextIndex);
+      persistEditorSession(targetCanvas, snapshot);
+    },
+    [canvas, persistEditorSession],
+  );
+
+  const refreshSelectionOutline = useCallback(
+    (selectedObject = canvas?.getActiveObject() || null) => {
+      if (!canvas) {
+        return;
+      }
+
+      canvas.getObjects().forEach((object) => {
+        const isBaseImage = Boolean(baseImageIdRef.current && object.editorId === baseImageIdRef.current);
+
+        object.isBaseImage = isBaseImage;
+        object.set({
+          borderColor: isBaseImage && selectedObject === object ? "#22d3ee" : "transparent",
+          cornerColor: isBaseImage && selectedObject === object ? "#22d3ee" : "transparent",
+          cornerStrokeColor: isBaseImage && selectedObject === object ? "#22d3ee" : "transparent",
+          cornerSize: 10,
+        });
+      });
+
+      canvas.requestRenderAll();
     },
     [canvas],
   );
 
-  const removeCropRect = useCallback(() => {
-    if (canvas && cropRectRef.current) {
-      canvas.remove(cropRectRef.current);
-      canvas.requestRenderAll();
+  const centerBaseImageInWorkspace = useCallback(() => {
+    if (!canvas || !canvasContainerRef.current) {
+      return false;
     }
 
-    cropRectRef.current = null;
-    cropStartRef.current = null;
-    setCropReady(false);
-  }, [canvas]);
+    const canvasWidth = canvas.getWidth();
+    const canvasHeight = canvas.getHeight();
 
-  const selectTool = useCallback(
-    (tool) => {
-      if (tool !== "crop") {
-        removeCropRect();
+    if (canvasWidth <= 0 || canvasHeight <= 0) {
+      return false;
+    }
+
+    const baseImage = getBaseImageObject(canvas);
+
+    if (!baseImage || !baseImage.width || !baseImage.height) {
+      return false;
+    }
+
+    const scale = Math.min(
+      canvasWidth / baseImage.width,
+      canvasHeight / baseImage.height,
+      1,
+    );
+
+    baseImageIdRef.current = baseImage.editorId;
+    baseImage.isBaseImage = true;
+    baseImage.set({
+      scaleX: scale,
+      scaleY: scale,
+      left: canvasWidth / 2,
+      top: canvasHeight / 2,
+      originX: "center",
+      originY: "center",
+    });
+    baseImage.setCoords();
+    canvas.setActiveObject(baseImage);
+    refreshSelectionOutline(baseImage);
+    syncObjects(canvas);
+
+    return true;
+  }, [canvas, refreshSelectionOutline, syncObjects]);
+
+  const updateCanvasSize = useCallback(() => {
+    if (!canvas || !canvasContainerRef.current) {
+      return;
+    }
+
+    const container = canvasContainerRef.current;
+
+    if (container.clientWidth <= 0 || container.clientHeight <= 0) {
+      return;
+    }
+
+    canvas.setWidth(container.clientWidth);
+    canvas.setHeight(container.clientHeight);
+
+    if (!baseImageInitializedRef.current) {
+      const centered = centerBaseImageInWorkspace();
+
+      if (centered) {
+        baseImageInitializedRef.current = true;
+      }
+    }
+
+    canvas.requestRenderAll();
+  }, [canvas, centerBaseImageInWorkspace]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      updateCanvasSize();
+    };
+
+    const timer = window.setTimeout(() => updateCanvasSize(), 100);
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [updateCanvasSize]);
+
+  useEffect(() => {
+    if (!canvas || baseImageInitializedRef.current || objects.length === 0) {
+      return;
+    }
+
+    const centered = centerBaseImageInWorkspace();
+
+    if (centered) {
+      baseImageInitializedRef.current = true;
+    }
+  }, [canvas, centerBaseImageInWorkspace, objects.length]);
+
+  useEffect(() => {
+    if (!canvas || !storedSession || restoredSessionRef.current) {
+      return;
+    }
+
+    restoredSessionRef.current = true;
+    isRestoringHistoryRef.current = true;
+    baseImageInitializedRef.current = true;
+
+    canvas.clear();
+    canvas.loadFromJSON(storedSession.canvas, () => {
+      const savedViewportTransform =
+        Array.isArray(storedSession.viewportTransform) &&
+        storedSession.viewportTransform.length === 6
+          ? [...storedSession.viewportTransform]
+          : null;
+
+      if (savedViewportTransform) {
+        canvas.setViewportTransform(savedViewportTransform);
       }
 
-      setActiveTool(tool);
-    },
-    [removeCropRect],
-  );
+      const restoredZoom = typeof storedSession.zoom === "number"
+        ? storedSession.zoom
+        : savedViewportTransform
+          ? savedViewportTransform[0]
+          : 1;
+
+      setZoom(restoredZoom);
+      baseImageIdRef.current = storedSession.baseImageId || getBaseImageObject(canvas)?.editorId || null;
+
+      const restoredActiveObject = storedSession.activeObjectId
+        ? canvas.getObjects().find((object) => object.editorId === storedSession.activeObjectId)
+        : null;
+
+      if (restoredActiveObject) {
+        canvas.setActiveObject(restoredActiveObject);
+        setActiveObject(restoredActiveObject);
+        refreshSelectionOutline(restoredActiveObject);
+      } else {
+        canvas.discardActiveObject();
+        setActiveObject(null);
+        refreshSelectionOutline(null);
+      }
+
+      historyRef.current = [storedSession.canvas];
+      historyIndexRef.current = 0;
+      setHistory([storedSession.canvas]);
+      setHistoryIndex(0);
+      syncObjects(canvas);
+      canvas.requestRenderAll();
+      isRestoringHistoryRef.current = false;
+    });
+  }, [canvas, refreshSelectionOutline, setActiveObject, storedSession, syncObjects]);
 
   useEffect(() => {
     if (!canvas) {
       return undefined;
     }
 
-    if (activeTool !== "crop") {
-      canvas.selection = true;
-      canvas.defaultCursor = "default";
-      restoreObjectInteractivity(true);
-      canvas.requestRenderAll();
-      return undefined;
-    }
-
-    canvas.discardActiveObject();
-    setActiveObject(null);
-    syncObjects(canvas);
-    canvas.selection = false;
-    canvas.defaultCursor = "crosshair";
-    restoreObjectInteractivity(false);
-    canvas.requestRenderAll();
-
-    const handleMouseDown = (event) => {
-      if (event.e?.button && event.e.button !== 0) {
-        return;
-      }
-
-      removeCropRect();
-
-      const pointer = canvas.getPointer(event.e);
-      cropStartRef.current = pointer;
-
-      const cropRect = new fabric.Rect({
-        left: pointer.x,
-        top: pointer.y,
-        width: 0,
-        height: 0,
-        fill: "rgba(45, 212, 191, 0.16)",
-        stroke: "#5eead4",
-        strokeWidth: 2,
-        strokeDashArray: [8, 6],
-        selectable: false,
-        evented: false,
-        hasControls: false,
-        excludeFromLayer: true,
-      });
-
-      cropRectRef.current = cropRect;
-      setCropReady(false);
-      canvas.add(cropRect);
-      canvas.requestRenderAll();
+    const handleSelection = (event) => {
+      const selectedObject = event.selected?.[0] || canvas.getActiveObject() || null;
+      refreshSelectionOutline(selectedObject);
     };
 
-    const handleMouseMove = (event) => {
-      const start = cropStartRef.current;
-      const cropRect = cropRectRef.current;
-
-      if (!start || !cropRect) {
-        return;
-      }
-
-      const pointer = canvas.getPointer(event.e);
-      const left = Math.min(start.x, pointer.x);
-      const top = Math.min(start.y, pointer.y);
-      const width = Math.abs(pointer.x - start.x);
-      const height = Math.abs(pointer.y - start.y);
-
-      cropRect.set({
-        left,
-        top,
-        width,
-        height,
-      });
-      cropRect.setCoords();
-      setCropReady(width > 8 && height > 8);
-      canvas.requestRenderAll();
+    const handleSelectionCleared = () => {
+      refreshSelectionOutline(null);
     };
 
-    const handleMouseUp = () => {
-      cropStartRef.current = null;
-      const cropRect = cropRectRef.current;
-
-      if (!cropRect) {
-        setCropReady(false);
-        return;
-      }
-
-      const isLargeEnough = (cropRect.width || 0) > 8 && (cropRect.height || 0) > 8;
-      setCropReady(isLargeEnough);
-
-      if (!isLargeEnough) {
-        removeCropRect();
-      }
-    };
-
-    canvas.on("mouse:down", handleMouseDown);
-    canvas.on("mouse:move", handleMouseMove);
-    canvas.on("mouse:up", handleMouseUp);
+    canvas.on("selection:created", handleSelection);
+    canvas.on("selection:updated", handleSelection);
+    canvas.on("selection:cleared", handleSelectionCleared);
 
     return () => {
-      canvas.off("mouse:down", handleMouseDown);
-      canvas.off("mouse:move", handleMouseMove);
-      canvas.off("mouse:up", handleMouseUp);
-      cropStartRef.current = null;
-      canvas.selection = true;
-      canvas.defaultCursor = "default";
-      restoreObjectInteractivity(true);
-      canvas.requestRenderAll();
+      canvas.off("selection:created", handleSelection);
+      canvas.off("selection:updated", handleSelection);
+      canvas.off("selection:cleared", handleSelectionCleared);
     };
-  }, [activeTool, canvas, removeCropRect, restoreObjectInteractivity, setActiveObject, syncObjects]);
+  }, [canvas, refreshSelectionOutline]);
 
-  const applyCrop = useCallback(() => {
-    const cropRect = cropRectRef.current;
-
-    if (!canvas || !cropRect) {
+  useEffect(() => {
+    if (!canvas || objects.length === 0 || historyIndex !== -1) {
       return;
     }
 
-    const bounds = cropRect.getBoundingRect();
-    const left = Math.max(0, Math.round(bounds.left));
-    const top = Math.max(0, Math.round(bounds.top));
-    const width = Math.min(canvas.getWidth() - left, Math.round(bounds.width));
-    const height = Math.min(canvas.getHeight() - top, Math.round(bounds.height));
+    snapshotCanvas(canvas);
+  }, [canvas, historyIndex, objects.length, snapshotCanvas]);
 
-    if (width < 2 || height < 2) {
-      removeCropRect();
-      return;
-    }
+  const selectTool = useCallback((toolId) => {
+    setToolMessage("");
+    setActiveTool(toolId);
+  }, []);
 
-    canvas.remove(cropRect);
-    cropRectRef.current = null;
-    setCropReady(false);
-    canvas.discardActiveObject();
-    canvas.renderAll();
+  const updateToolSettings = useCallback((toolId, nextSettings) => {
+    setToolSettings((currentSettings) => ({
+      ...currentSettings,
+      [toolId]: {
+        ...currentSettings[toolId],
+        ...nextSettings,
+      },
+    }));
+  }, []);
 
-    const croppedDataUrl = canvas.toDataURL({
-      format: "png",
-      left,
-      top,
-      width,
-      height,
-      multiplier: 1,
-    });
-
+  const switchToSelectMode = useCallback(() => {
+    setToolMessage("");
+    toolManagerRef.current?.setActiveTool("select");
     setActiveTool("select");
+  }, []);
 
-    fabric.Image.fromURL(croppedDataUrl, (croppedImage) => {
-      assignObjectMeta(croppedImage, getNextObjectName(canvas, "Object"), "crop", {
-        forceNewId: true,
-      });
-      croppedImage.set({
-        left: Math.min(left + 28, canvas.getWidth() - width),
-        top: Math.min(top + 28, canvas.getHeight() - height),
-        selectable: true,
-        evented: true,
-      });
-      canvas.add(croppedImage);
-      canvas.setActiveObject(croppedImage);
-      setActiveObject(croppedImage);
+  const resolveToolSourceObject = useCallback(() => getSelectedOrBaseImageObject(canvas), [canvas]);
+
+  const handleToolObjectCreated = useCallback(
+    (fabricObject) => {
+      if (!canvas) {
+        return;
+      }
+
+      fabricObject.isBaseImage = false;
+      canvas.add(fabricObject);
+      canvas.setActiveObject(fabricObject);
+      setActiveObject(fabricObject);
+      refreshSelectionOutline(fabricObject);
       canvas.requestRenderAll();
       syncObjects(canvas);
-    });
-  }, [canvas, removeCropRect, setActiveObject, syncObjects]);
+      snapshotCanvas(canvas);
+    },
+    [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects],
+  );
 
-  const addText = useCallback(() => {
+  const handleEraserMutation = useCallback(() => {
     if (!canvas) {
       return;
     }
 
-    removeCropRect();
-    setActiveTool("select");
-
-    const textbox = new fabric.Textbox("Edit text", {
-      left: 120,
-      top: 120,
-      width: 260,
-      fontSize: 36,
-      fontFamily: "Inter, ui-sans-serif, system-ui",
-      fontWeight: 700,
-      fill: "#f8fafc",
-    });
-
-    assignObjectMeta(textbox, getNextObjectName(canvas, "Text"), "text");
-    canvas.add(textbox);
-    canvas.setActiveObject(textbox);
-    setActiveObject(textbox);
     canvas.requestRenderAll();
     syncObjects(canvas);
-  }, [canvas, removeCropRect, setActiveObject, syncObjects]);
+    snapshotCanvas(canvas);
+  }, [canvas, snapshotCanvas, syncObjects]);
+
+  const requestToolChange = useCallback((toolId) => {
+    setActiveTool(toolId);
+  }, []);
+
+  useEffect(() => {
+    if (!canvas) {
+      return undefined;
+    }
+
+    const manager = new ToolManager({
+      canvas,
+      tools: {
+        crop: new CropTool({
+          canvas,
+          fabric,
+          getSourceObject: resolveToolSourceObject,
+          onObjectCreated: handleToolObjectCreated,
+          onRequestToolChange: requestToolChange,
+          onWarning: setToolMessage,
+        }),
+        draw: new DrawTool({
+          canvas,
+          fabric,
+          getSourceObject: resolveToolSourceObject,
+          onObjectCreated: handleToolObjectCreated,
+          onRequestToolChange: requestToolChange,
+          onWarning: setToolMessage,
+        }),
+        eraser: new EraserTool({
+          canvas,
+          fabric,
+          onCanvasMutation: handleEraserMutation,
+          onWarning: setToolMessage,
+        }),
+      },
+    });
+
+    toolManagerRef.current = manager;
+
+    return () => {
+      manager.dispose();
+
+      if (toolManagerRef.current === manager) {
+        toolManagerRef.current = null;
+      }
+    };
+  }, [canvas, handleEraserMutation, handleToolObjectCreated, requestToolChange, resolveToolSourceObject]);
+
+  const activeToolOptions = activeTool === "draw" ? toolSettings.draw : activeTool === "eraser" ? toolSettings.eraser : undefined;
+
+  useEffect(() => {
+    const manager = toolManagerRef.current;
+
+    if (!manager) {
+      return;
+    }
+
+    const activated = manager.setActiveTool(activeTool, activeToolOptions);
+
+    if (!activated && activeTool !== "select") {
+      setActiveTool("select");
+    }
+  }, [activeTool, activeToolOptions]);
+
+  useEffect(() => {
+    if (!canvas) {
+      return undefined;
+    }
+
+    const handleObjectModified = () => {
+      snapshotCanvas(canvas);
+    };
+
+      canvas.on("object:modified", handleObjectModified);
+
+    return () => {
+      canvas.off("object:modified", handleObjectModified);
+    };
+  }, [canvas, snapshotCanvas]);
+
+  const addText = useCallback(
+    (options = {}) => {
+      if (!canvas) {
+        return;
+      }
+
+      switchToSelectMode();
+
+      const textbox = new fabric.Textbox("Edit text", {
+        left: 120,
+        top: 120,
+        width: 260,
+        fontSize: options.fontSize || 36,
+        fontFamily: "Inter, ui-sans-serif, system-ui",
+        fontWeight: 700,
+        fill: options.color || "#f8fafc",
+      });
+
+      assignObjectMeta(textbox, getNextObjectName(canvas, "Text"), "text");
+      textbox.isBaseImage = false;
+      canvas.add(textbox);
+      canvas.setActiveObject(textbox);
+      setActiveObject(textbox);
+      refreshSelectionOutline(textbox);
+      canvas.requestRenderAll();
+      syncObjects(canvas);
+      snapshotCanvas(canvas);
+    },
+    [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, switchToSelectMode, syncObjects],
+  );
 
   const addShape = useCallback(
     (shapeType) => {
@@ -281,8 +537,7 @@ export default function Editor({ imageUrl }) {
         return;
       }
 
-      removeCropRect();
-      setActiveTool("select");
+      switchToSelectMode();
 
       let shape;
 
@@ -314,13 +569,16 @@ export default function Editor({ imageUrl }) {
       }
 
       assignObjectMeta(shape, getNextObjectName(canvas, "Shape"), "shape");
+      shape.isBaseImage = false;
       canvas.add(shape);
       canvas.setActiveObject(shape);
       setActiveObject(shape);
+      refreshSelectionOutline(shape);
       canvas.requestRenderAll();
       syncObjects(canvas);
+      snapshotCanvas(canvas);
     },
-    [canvas, removeCropRect, setActiveObject, syncObjects],
+    [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, switchToSelectMode, syncObjects],
   );
 
   const deleteSelected = useCallback(() => {
@@ -332,9 +590,11 @@ export default function Editor({ imageUrl }) {
 
     removeObjectFromCanvas(canvas, selectedObject);
     setActiveObject(null);
+    refreshSelectionOutline(null);
     canvas.requestRenderAll();
     syncObjects(canvas);
-  }, [canvas, setActiveObject, syncObjects]);
+    snapshotCanvas(canvas);
+  }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects]);
 
   const duplicateSelected = useCallback(async () => {
     const selectedObject = canvas?.getActiveObject();
@@ -344,11 +604,20 @@ export default function Editor({ imageUrl }) {
     }
 
     const clonedObject = await cloneFabricObject(selectedObject);
-    const prefix = selectedObject.editorKind === "text" ? "Text" : selectedObject.editorKind === "shape" ? "Shape" : "Object";
+    const prefixByKind = {
+      text: "Text",
+      shape: "Shape",
+      crop: "Crop",
+      cut: "Cut",
+      line: "Line",
+      arrow: "Arrow",
+    };
+    const prefix = prefixByKind[selectedObject.editorKind] || "Object";
 
     assignObjectMeta(clonedObject, getNextObjectName(canvas, prefix), selectedObject.editorKind || "object", {
       forceNewId: true,
     });
+    clonedObject.isBaseImage = false;
     clonedObject.set({
       left: (selectedObject.left || 0) + 28,
       top: (selectedObject.top || 0) + 28,
@@ -356,31 +625,332 @@ export default function Editor({ imageUrl }) {
       selectable: true,
       evented: true,
     });
+    clonedObject.setCoords();
+
     canvas.add(clonedObject);
     canvas.setActiveObject(clonedObject);
     setActiveObject(clonedObject);
+    refreshSelectionOutline(clonedObject);
     canvas.requestRenderAll();
     syncObjects(canvas);
-  }, [canvas, setActiveObject, syncObjects]);
+    snapshotCanvas(canvas);
+  }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects]);
+
+  const uploadImage = useCallback(
+    (file) => {
+      if (!canvas) {
+        return;
+      }
+
+      switchToSelectMode();
+
+      const reader = new FileReader();
+
+      reader.onload = (event) => {
+        fabric.Image.fromURL(event.target?.result, (image) => {
+          if (!image) {
+            return;
+          }
+
+          fitImageToCanvas(image, canvas);
+          image.set({
+            selectable: true,
+            evented: true,
+            erasable: true,
+          });
+          image.setCoords();
+
+          assignObjectMeta(image, getNextObjectName(canvas, "Object"), "upload", {
+            forceNewId: true,
+          });
+          image.isBaseImage = false;
+
+          canvas.add(image);
+          canvas.setActiveObject(image);
+          setActiveObject(image);
+          refreshSelectionOutline(image);
+          canvas.requestRenderAll();
+          syncObjects(canvas);
+          snapshotCanvas(canvas);
+        });
+      };
+
+      reader.readAsDataURL(file);
+    },
+    [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, switchToSelectMode, syncObjects],
+  );
+
+  const addLine = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    switchToSelectMode();
+
+    const line = new fabric.Line([50, 100, 200, 100], {
+      ...shapeStyles,
+      strokeWidth: 3,
+      selectable: true,
+      evented: true,
+    });
+
+    assignObjectMeta(line, getNextObjectName(canvas, "Line"), "line");
+    line.isBaseImage = false;
+    canvas.add(line);
+    canvas.setActiveObject(line);
+    setActiveObject(line);
+    refreshSelectionOutline(line);
+    canvas.requestRenderAll();
+    syncObjects(canvas);
+    snapshotCanvas(canvas);
+  }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, switchToSelectMode, syncObjects]);
+
+  const addArrow = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    switchToSelectMode();
+
+    const line = new fabric.Line([50, 100, 150, 100], {
+      ...shapeStyles,
+      strokeWidth: 3,
+      selectable: false,
+      evented: false,
+    });
+
+    const triangle = new fabric.Triangle({
+      ...shapeStyles,
+      left: 150,
+      top: 100,
+      width: 20,
+      height: 20,
+      angle: 90,
+      selectable: false,
+      evented: false,
+    });
+
+    const arrow = new fabric.Group([line, triangle], {
+      left: 100,
+      top: 100,
+      selectable: true,
+      evented: true,
+    });
+
+    assignObjectMeta(arrow, getNextObjectName(canvas, "Arrow"), "arrow");
+    arrow.isBaseImage = false;
+    canvas.add(arrow);
+    canvas.setActiveObject(arrow);
+    setActiveObject(arrow);
+    refreshSelectionOutline(arrow);
+    canvas.requestRenderAll();
+    syncObjects(canvas);
+    snapshotCanvas(canvas);
+  }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, switchToSelectMode, syncObjects]);
+
+  const loadHistoryState = useCallback(
+    (nextIndex) => {
+      if (!canvas || nextIndex < 0 || nextIndex >= historyRef.current.length) {
+        return;
+      }
+
+      isRestoringHistoryRef.current = true;
+      historyIndexRef.current = nextIndex;
+      setHistoryIndex(nextIndex);
+
+      canvas.loadFromJSON(historyRef.current[nextIndex], () => {
+        canvas.discardActiveObject();
+        setActiveObject(null);
+        refreshSelectionOutline(null);
+        canvas.requestRenderAll();
+        syncObjects(canvas);
+        persistEditorSession(canvas, historyRef.current[nextIndex]);
+        isRestoringHistoryRef.current = false;
+      });
+    },
+    [canvas, persistEditorSession, refreshSelectionOutline, setActiveObject, syncObjects],
+  );
+
+  const undo = useCallback(() => {
+    if (historyIndexRef.current > 0) {
+      loadHistoryState(historyIndexRef.current - 1);
+    }
+  }, [loadHistoryState]);
+
+  const redo = useCallback(() => {
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      loadHistoryState(historyIndexRef.current + 1);
+    }
+  }, [loadHistoryState]);
+
+  const zoomIn = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    const nextZoom = Math.min(zoom * 1.2, 5);
+    setZoom(nextZoom);
+    canvas.setZoom(nextZoom);
+    canvas.requestRenderAll();
+    persistEditorSession(canvas);
+  }, [canvas, persistEditorSession, zoom]);
+
+  const zoomOut = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    const nextZoom = Math.max(zoom / 1.2, 0.1);
+    setZoom(nextZoom);
+    canvas.setZoom(nextZoom);
+    canvas.requestRenderAll();
+    persistEditorSession(canvas);
+  }, [canvas, persistEditorSession, zoom]);
+
+  const resetCanvas = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    setZoom(1);
+    canvas.setZoom(1);
+    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    canvas.requestRenderAll();
+    persistEditorSession(canvas);
+  }, [canvas, persistEditorSession]);
+
+  const saveProject = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    const projectData = {
+      version: "1.0",
+      canvas: canvas.toJSON(FABRIC_SERIALIZATION_PROPS),
+      timestamp: new Date().toISOString(),
+    };
+
+    const blob = new Blob([JSON.stringify(projectData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `pixelforge-project-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [canvas]);
 
   const exportCanvas = useCallback(() => {
     if (!canvas) {
       return;
     }
 
-    removeCropRect();
     canvas.discardActiveObject();
-    canvas.renderAll();
+
+    const baseImage = getBaseImageObject(canvas);
+    const previousVisibility = baseImage?.visible;
+    const previousBackground = canvas.backgroundColor;
+
+    if (baseImage) {
+      baseImage.set({ visible: false });
+    }
+
+    canvas.setBackgroundColor("transparent", canvas.renderAll.bind(canvas));
 
     const pngDataUrl = canvas.toDataURL({
       format: "png",
       multiplier: 2,
     });
+
+    if (baseImage) {
+      baseImage.set({ visible: previousVisibility });
+    }
+
+    canvas.setBackgroundColor(previousBackground, canvas.renderAll.bind(canvas));
+
     const downloadLink = document.createElement("a");
     downloadLink.href = pngDataUrl;
     downloadLink.download = "pixelforge-export.png";
     downloadLink.click();
-  }, [canvas, removeCropRect]);
+  }, [canvas]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (!canvas) {
+        return;
+      }
+
+      const targetTag = event.target?.tagName;
+
+      if (targetTag === "INPUT" || targetTag === "TEXTAREA" || targetTag === "SELECT") {
+        return;
+      }
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        deleteSelected();
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        duplicateSelected();
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undo();
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redo();
+        return;
+      }
+
+      if (event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      switch (event.key.toLowerCase()) {
+        case "v":
+          selectTool("select");
+          break;
+        case "c":
+          selectTool("crop");
+          break;
+        case "d":
+          selectTool("draw");
+          break;
+        case "e":
+          selectTool("eraser");
+          break;
+        case "t":
+          addText();
+          break;
+        case "l":
+          addLine();
+          break;
+        case "a":
+          addArrow();
+          break;
+        case "r":
+          addShape("rect");
+          break;
+        case "o":
+          addShape("circle");
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [addArrow, addLine, addShape, addText, canvas, deleteSelected, duplicateSelected, redo, selectTool, undo]);
 
   if (!imageUrl) {
     return <MissingImageState />;
@@ -388,49 +958,54 @@ export default function Editor({ imageUrl }) {
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-slate-950 px-4">
-        <div className="flex items-center gap-3">
-          <Link
-            to="/home"
-            className="grid h-9 w-9 place-items-center rounded-lg border border-white/10 bg-white/[0.06] text-slate-200 transition hover:bg-white/[0.12]"
-            title="Back to preview"
-          >
-            <ArrowLeft size={18} />
-          </Link>
-          <div>
-            <h1 className="text-sm font-semibold text-white">PixelForge Editor</h1>
-            <p className="text-xs text-slate-400">Fabric.js canvas workspace</p>
+      <TopBar
+        canvas={canvas}
+        onUndo={undo}
+        onRedo={redo}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onResetCanvas={resetCanvas}
+        onExport={exportCanvas}
+        onSaveProject={saveProject}
+        zoom={zoom}
+      />
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <LeftSidebar
+          activeTool={activeTool}
+          toolSettings={toolSettings}
+          toolMessage={toolMessage}
+          eraserSupported={eraserSupported}
+          hasSelection={Boolean(activeObject)}
+          onToolSelect={selectTool}
+          onToolSettingsChange={updateToolSettings}
+          onAddText={addText}
+          onAddShape={addShape}
+          onDuplicate={duplicateSelected}
+          onDelete={deleteSelected}
+          onUpload={uploadImage}
+        />
+
+        <main className="relative flex min-w-0 flex-1 bg-slate-900">
+          <div ref={canvasContainerRef} className="fabric-canvas-wrapper relative h-full w-full">
+            <canvas ref={canvasElementRef} />
           </div>
-        </div>
-        <div className="rounded-lg border border-teal-200/20 bg-teal-300/10 px-3 py-1 text-xs font-semibold text-teal-100">
-          {activeTool === "crop" ? "Crop mode" : "Select mode"}
-        </div>
-      </header>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <Toolbar
-            activeTool={activeTool}
-            hasSelection={Boolean(activeObject)}
-            cropReady={cropReady}
-            onSelectTool={selectTool}
-            onApplyCrop={applyCrop}
-            onCancelCrop={removeCropRect}
-            onAddText={addText}
-            onAddShape={addShape}
-            onDelete={deleteSelected}
-            onDuplicate={duplicateSelected}
-            onExport={exportCanvas}
+          <FloatingToolbar
+            selectedObject={activeObject}
+            canvas={canvas}
+            onUpdate={() => {
+              if (!canvas) {
+                return;
+              }
+
+              syncObjects(canvas);
+              snapshotCanvas(canvas);
+            }}
           />
+        </main>
 
-          <main className="grid min-w-0 flex-1 place-items-center overflow-auto bg-slate-900 p-6">
-            <div className="fabric-canvas-wrapper rounded-lg border border-white/10 bg-slate-950 p-3 shadow-2xl shadow-black/40">
-              <canvas ref={canvasElementRef} width="980" height="660" />
-            </div>
-          </main>
-        </div>
-
-        <LayersPanel className="h-56 w-full overflow-y-auto border-l-0 border-t lg:h-auto lg:w-80 lg:border-l lg:border-t-0" />
+        <RightPanel />
       </div>
     </div>
   );
