@@ -42,6 +42,9 @@ const INITIAL_TOOL_SETTINGS = {
   },
 };
 
+const INITIAL_CANVAS_WIDTH = 980;
+const INITIAL_CANVAS_HEIGHT = 660;
+
 function MissingImageState() {
   return (
     <div className="grid min-h-screen place-items-center bg-slate-950 px-4 text-slate-100">
@@ -189,6 +192,23 @@ export default function Editor({ imageUrl }) {
     [canvas],
   );
 
+  const isCanvasSizedToWorkspace = useCallback(() => {
+    if (!canvas || !canvasContainerRef.current) {
+      return false;
+    }
+
+    const container = canvasContainerRef.current;
+
+    if (container.clientWidth <= 0 || container.clientHeight <= 0) {
+      return false;
+    }
+
+    return (
+      Math.abs(canvas.getWidth() - container.clientWidth) <= 1 &&
+      Math.abs(canvas.getHeight() - container.clientHeight) <= 1
+    );
+  }, [canvas]);
+
   const centerBaseImageInWorkspace = useCallback(() => {
     if (!canvas || !canvasContainerRef.current) {
       return false;
@@ -231,6 +251,49 @@ export default function Editor({ imageUrl }) {
     return true;
   }, [canvas, refreshSelectionOutline, syncObjects]);
 
+  const shouldRecenterRestoredBaseImage = useCallback(() => {
+    if (!canvas || !isCanvasSizedToWorkspace()) {
+      return false;
+    }
+
+    const layerObjects = canvas.getObjects().filter((object) => !object.excludeFromLayer);
+
+    if (layerObjects.length !== 1) {
+      return false;
+    }
+
+    const baseImage = getBaseImageObject(canvas);
+
+    if (!baseImage) {
+      return false;
+    }
+
+    const viewportTransform = Array.isArray(canvas.viewportTransform)
+      ? canvas.viewportTransform
+      : [1, 0, 0, 1, 0, 0];
+    const [a, b, c, d, e, f] = viewportTransform;
+    const hasDefaultViewport =
+      Math.abs(a - 1) <= 0.001 &&
+      Math.abs(b) <= 0.001 &&
+      Math.abs(c) <= 0.001 &&
+      Math.abs(d - 1) <= 0.001 &&
+      Math.abs(e) <= 0.001 &&
+      Math.abs(f) <= 0.001;
+
+    if (!hasDefaultViewport) {
+      return false;
+    }
+
+    const centerPoint = baseImage.getCenterPoint();
+
+    return (
+      Math.abs(centerPoint.x - INITIAL_CANVAS_WIDTH / 2) <= 2 &&
+      Math.abs(centerPoint.y - INITIAL_CANVAS_HEIGHT / 2) <= 2 &&
+      (Math.abs(canvas.getWidth() - INITIAL_CANVAS_WIDTH) > 1 ||
+        Math.abs(canvas.getHeight() - INITIAL_CANVAS_HEIGHT) > 1)
+    );
+  }, [canvas, isCanvasSizedToWorkspace]);
+
   const updateCanvasSize = useCallback(() => {
     if (!canvas || !canvasContainerRef.current) {
       return;
@@ -271,7 +334,12 @@ export default function Editor({ imageUrl }) {
   }, [updateCanvasSize]);
 
   useEffect(() => {
-    if (!canvas || baseImageInitializedRef.current || objects.length === 0) {
+    if (
+      !canvas ||
+      baseImageInitializedRef.current ||
+      objects.length === 0 ||
+      !isCanvasSizedToWorkspace()
+    ) {
       return;
     }
 
@@ -280,7 +348,7 @@ export default function Editor({ imageUrl }) {
     if (centered) {
       baseImageInitializedRef.current = true;
     }
-  }, [canvas, centerBaseImageInWorkspace, objects.length]);
+  }, [canvas, centerBaseImageInWorkspace, isCanvasSizedToWorkspace, objects.length]);
 
   useEffect(() => {
     if (!canvas || !storedSession || restoredSessionRef.current) {
@@ -312,6 +380,10 @@ export default function Editor({ imageUrl }) {
       setZoom(restoredZoom);
       baseImageIdRef.current = storedSession.baseImageId || getBaseImageObject(canvas)?.editorId || null;
 
+      if (shouldRecenterRestoredBaseImage()) {
+        centerBaseImageInWorkspace();
+      }
+
       const restoredActiveObject = storedSession.activeObjectId
         ? canvas.getObjects().find((object) => object.editorId === storedSession.activeObjectId)
         : null;
@@ -334,7 +406,15 @@ export default function Editor({ imageUrl }) {
       canvas.requestRenderAll();
       isRestoringHistoryRef.current = false;
     });
-  }, [canvas, refreshSelectionOutline, setActiveObject, storedSession, syncObjects]);
+  }, [
+    canvas,
+    centerBaseImageInWorkspace,
+    refreshSelectionOutline,
+    setActiveObject,
+    shouldRecenterRestoredBaseImage,
+    storedSession,
+    syncObjects,
+  ]);
 
   useEffect(() => {
     if (!canvas) {

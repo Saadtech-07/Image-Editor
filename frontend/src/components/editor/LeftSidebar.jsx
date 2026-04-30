@@ -147,7 +147,7 @@ export default function LeftSidebar({
           Crop
         </div>
         <ToolModeButton active={activeTool === "crop"} label="Activate Crop" onClick={() => onToolSelect("crop")} />
-        <p className="text-xs text-slate-500">Cursor becomes a plus. Drag a rectangle to cut that region into a new image and remove it from the original.</p>
+        {/* <p className="text-xs text-slate-500">Cursor becomes a plus. Drag a rectangle to cut that region into a new image and remove it from the original.</p> */}
       </section>
 
       <section className="space-y-3 border-t border-white/10 pt-4">
@@ -156,7 +156,7 @@ export default function LeftSidebar({
           Draw
         </div>
         <ToolModeButton active={activeTool === "draw"} label="Activate Draw" onClick={() => onToolSelect("draw")} />
-        <p className="text-xs text-slate-500">Cursor becomes a pen. Draw a freehand shape to duplicate that portion without changing the source image.</p>
+        {/* <p className="text-xs text-slate-500">Cursor becomes a pen. Draw a freehand shape to duplicate that portion without changing the source image.</p> */}
 
         <div>
           <label className="mb-2 block text-xs text-slate-400">Brush Size</label>
@@ -201,7 +201,7 @@ export default function LeftSidebar({
           label={eraserSupported ? "Activate Eraser" : "Eraser Unavailable"}
           onClick={() => onToolSelect("eraser")}
         />
-        <p className="text-xs text-slate-500">Cursor becomes a circle. Erasing changes pixels on the image itself and does not create objects.</p>
+        {/* <p className="text-xs text-slate-500">Cursor becomes a circle. Erasing changes pixels on the image itself and does not create objects.</p> */}
 
         <div>
           <label className="mb-2 block text-xs text-slate-400">Brush Size</label>
