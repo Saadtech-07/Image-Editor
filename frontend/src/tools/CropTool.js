@@ -8,15 +8,16 @@ import {
   normalizeCanvasRect,
   removeObjectFromCanvas,
   setCanvasObjectInteractivity,
+  setCanvasObjectSelection,
 } from "../utils/fabricHelpers.js";
 
 const MIN_CROP_SIZE = 8;
 
 export default class CropTool {
-  constructor({ canvas, fabric, getSourceObject, onObjectCreated, onRequestToolChange, onWarning }) {
+  constructor({ canvas, fabric, findImageTargetUnderCursor, onObjectCreated, onRequestToolChange, onWarning }) {
     this.canvas = canvas;
     this.fabric = fabric;
-    this.getSourceObject = getSourceObject;
+    this.findImageTargetUnderCursor = findImageTargetUnderCursor;
     this.onObjectCreated = onObjectCreated;
     this.onRequestToolChange = onRequestToolChange;
     this.onWarning = onWarning;
@@ -32,10 +33,10 @@ export default class CropTool {
       return false;
     }
 
-    this.sourceObject = this.getSourceObject?.() || null;
+    this.sourceObject = null; // Don't pre-select, find on mouse down
     this.canvas.selection = false;
     this.canvas.discardActiveObject();
-    setCanvasObjectInteractivity(this.canvas, false);
+    setCanvasObjectSelection(this.canvas, false); // Keep events enabled for hover
     applyCanvasCursor(this.canvas, getCropCursor());
 
     this.handlers = {
@@ -63,13 +64,21 @@ export default class CropTool {
     this.dragStart = null;
     this.sourceObject = null;
     this.removePreviewRect();
-    setCanvasObjectInteractivity(this.canvas, true);
+    setCanvasObjectInteractivity(this.canvas, true); // Restore full interactivity
   }
 
   updateOptions() {}
 
   handleMouseDown(event) {
     if (this.isProcessing || (event.e?.button !== undefined && event.e.button !== 0)) {
+      return;
+    }
+
+    // Find image target under cursor
+    this.sourceObject = this.findImageTargetUnderCursor?.(event.e) || null;
+    
+    if (!this.sourceObject) {
+      this.onWarning?.("Click on an image to use Crop tool.");
       return;
     }
 
@@ -194,11 +203,8 @@ export default class CropTool {
   }
 
   resolveSourceObject() {
-    if (this.sourceObject && this.canvas.getObjects().includes(this.sourceObject)) {
-      return this.sourceObject;
-    }
-
-    return this.getSourceObject?.() || null;
+    // Return the target found during mouse down
+    return this.sourceObject;
   }
 
   getLocalCropRegion(sourceObject, cropRegion) {

@@ -6,6 +6,7 @@ import LeftSidebar from "../components/editor/LeftSidebar.jsx";
 import FloatingToolbar from "../components/editor/FloatingToolbar.jsx";
 import TopBar from "../components/editor/TopBar.jsx";
 import RightPanel from "../components/editor/RightPanel.jsx";
+import WorkspaceManager from "../components/editor/WorkspaceManager.jsx";
 import { useEditor } from "../context/EditorContext.jsx";
 import useFabric from "../hooks/useFabric.js";
 import ToolManager from "../tools/ToolManager.js";
@@ -73,6 +74,8 @@ export default function Editor({ imageUrl }) {
   const historyRef = useRef([]);
   const historyIndexRef = useRef(-1);
   const isRestoringHistoryRef = useRef(false);
+  const previousWorkspaceIdRef = useRef("page-1");
+  const clipboardObjectRef = useRef(null);
   const restoredSessionRef = useRef(false);
   const baseImageIdRef = useRef(null);
   const baseImageInitializedRef = useRef(false);
@@ -82,7 +85,25 @@ export default function Editor({ imageUrl }) {
     skipInitialImageLoad: Boolean(storedSession),
   });
 
-  const { canvas, objects, activeObject, setActiveObject, syncObjects } = useEditor();
+  const { 
+    canvas, 
+    objects, 
+    activeObject, 
+    setActiveObject, 
+    syncObjects,
+    workspaces,
+    setWorkspaces,
+    activeWorkspaceId,
+    setActiveWorkspaceId,
+    createWorkspaceFromCurrentCanvas,
+    loadWorkspaceToCanvas,
+    switchWorkspace,
+    saveWorkspace,
+    hoveredLayerId,
+    setHoveredLayerId,
+    selectedLayerIds,
+    setSelectedLayerIds,
+  } = useEditor();
   const [activeTool, setActiveTool] = useState("select");
   const [toolSettings, setToolSettings] = useState(INITIAL_TOOL_SETTINGS);
   const [toolMessage, setToolMessage] = useState("");
@@ -115,11 +136,22 @@ export default function Editor({ imageUrl }) {
     setHistoryIndex(-1);
     historyRef.current = [];
     historyIndexRef.current = -1;
+    previousWorkspaceIdRef.current = "page-1";
     restoredSessionRef.current = false;
     baseImageIdRef.current = null;
     baseImageInitializedRef.current = false;
     setToolMessage("");
     setActiveTool("select");
+    setWorkspaces([
+      {
+        id: "page-1",
+        name: "Main",
+        canvasJSON: null,
+        history: [],
+        historyIndex: -1,
+      },
+    ]);
+    setActiveWorkspaceId("page-1");
   }, [imageUrl]);
 
   const persistEditorSession = useCallback(
@@ -153,10 +185,7 @@ export default function Editor({ imageUrl }) {
       const snapshot = JSON.stringify(targetCanvas.toJSON(FABRIC_SERIALIZATION_PROPS));
       const nextHistoryBase = historyRef.current.slice(0, historyIndexRef.current + 1);
 
-      if (nextHistoryBase[nextHistoryBase.length - 1] === snapshot) {
-        return;
-      }
-
+      // Always add the snapshot to ensure each action is recorded
       const nextHistory = [...nextHistoryBase, snapshot].slice(-50);
       const nextIndex = nextHistory.length - 1;
 
@@ -164,9 +193,16 @@ export default function Editor({ imageUrl }) {
       historyIndexRef.current = nextIndex;
       setHistory(nextHistory);
       setHistoryIndex(nextIndex);
+      if (activeWorkspaceId) {
+        saveWorkspace(activeWorkspaceId, {
+          canvasJSON: targetCanvas.toJSON(FABRIC_SERIALIZATION_PROPS),
+          history: nextHistory,
+          historyIndex: nextIndex,
+        });
+      }
       persistEditorSession(targetCanvas, snapshot);
     },
-    [canvas, persistEditorSession],
+    [activeWorkspaceId, canvas, persistEditorSession, saveWorkspace],
   );
 
   const refreshSelectionOutline = useCallback(
@@ -177,20 +213,86 @@ export default function Editor({ imageUrl }) {
 
       canvas.getObjects().forEach((object) => {
         const isBaseImage = Boolean(baseImageIdRef.current && object.editorId === baseImageIdRef.current);
+        const isSelected = selectedObject === object;
 
         object.isBaseImage = isBaseImage;
-        object.set({
-          borderColor: isBaseImage && selectedObject === object ? "#22d3ee" : "transparent",
-          cornerColor: isBaseImage && selectedObject === object ? "#22d3ee" : "transparent",
-          cornerStrokeColor: isBaseImage && selectedObject === object ? "#22d3ee" : "transparent",
-          cornerSize: 10,
-        });
+        
+        // Always show square outline for all objects
+        if (isSelected) {
+          // Selected object gets prominent cyan outline
+          object.set({
+            borderColor: "#22d3ee",
+            cornerColor: "#22d3ee",
+            cornerStrokeColor: "#22d3ee",
+            cornerSize: 10,
+            transparentCorners: false,
+            hasBorders: true,
+            hasControls: true,
+          });
+        } else {
+          // Non-selected objects get subtle light blue square outline
+          object.set({
+            borderColor: "#60a5fa",
+            cornerColor: "transparent",
+            cornerStrokeColor: "transparent",
+            cornerSize: 0,
+            transparentCorners: true,
+            hasBorders: true,
+            hasControls: false,
+            borderDashArray: [5, 5],
+          });
+        }
       });
 
       canvas.requestRenderAll();
     },
     [canvas],
   );
+
+  // Handle workspace switching
+  useEffect(() => {
+    if (!canvas || !activeWorkspaceId || previousWorkspaceIdRef.current === activeWorkspaceId) {
+      return;
+    }
+
+    const workspace = workspaces.find(w => w.id === activeWorkspaceId);
+
+    if (!workspace) {
+      return;
+    }
+
+    previousWorkspaceIdRef.current = activeWorkspaceId;
+    let isCurrentLoad = true;
+    isRestoringHistoryRef.current = true;
+    setActiveTool("select");
+    setToolMessage("");
+    toolManagerRef.current?.setActiveTool("select");
+    canvas.discardActiveObject();
+    setActiveObject(null);
+
+    const nextHistory = workspace.history || [];
+    const nextHistoryIndex = workspace.historyIndex ?? (nextHistory.length ? nextHistory.length - 1 : -1);
+
+    historyRef.current = nextHistory;
+    historyIndexRef.current = nextHistoryIndex;
+    setHistory(nextHistory);
+    setHistoryIndex(nextHistoryIndex);
+
+    void loadWorkspaceToCanvas(canvas, workspace).then(() => {
+      if (!isCurrentLoad) {
+        return;
+      }
+
+      syncObjects(canvas);
+      refreshSelectionOutline(null);
+      isRestoringHistoryRef.current = false;
+    });
+
+    return () => {
+      isCurrentLoad = false;
+      isRestoringHistoryRef.current = false;
+    };
+  }, [activeWorkspaceId, canvas, loadWorkspaceToCanvas, refreshSelectionOutline, setActiveObject, syncObjects, workspaces]);
 
   const isCanvasSizedToWorkspace = useCallback(() => {
     if (!canvas || !canvasContainerRef.current) {
@@ -430,16 +532,175 @@ export default function Editor({ imageUrl }) {
       refreshSelectionOutline(null);
     };
 
+    const handleMouseMove = (event) => {
+      const target = canvas.findTarget(event.e);
+      
+      if (target && target.type === "image" && !target.excludeFromLayer && target.editorId) {
+        setHoveredLayerId(target.editorId);
+      } else {
+        setHoveredLayerId(null);
+      }
+    };
+
+    const handleMouseOut = () => {
+      setHoveredLayerId(null);
+    };
+
+    const handleMouseClick = (event) => {
+      const target = canvas.findTarget(event.e);
+      
+      if (target && target.type === "image" && !target.excludeFromLayer && target.editorId) {
+        // Find the layer and select it
+        const layer = objects.find(obj => obj.id === target.editorId);
+        if (layer) {
+          canvas.setActiveObject(target);
+          setActiveObject(target);
+          refreshSelectionOutline(target);
+          syncObjects(canvas);
+        }
+      }
+    };
+
     canvas.on("selection:created", handleSelection);
     canvas.on("selection:updated", handleSelection);
     canvas.on("selection:cleared", handleSelectionCleared);
+    canvas.on("mouse:move", handleMouseMove);
+    canvas.on("mouse:out", handleMouseOut);
+    canvas.on("mouse:down", handleMouseClick);
 
     return () => {
       canvas.off("selection:created", handleSelection);
       canvas.off("selection:updated", handleSelection);
       canvas.off("selection:cleared", handleSelectionCleared);
+      canvas.off("mouse:move", handleMouseMove);
+      canvas.off("mouse:out", handleMouseOut);
+      canvas.off("mouse:down", handleMouseClick);
     };
-  }, [canvas, refreshSelectionOutline]);
+  }, [canvas, refreshSelectionOutline, setHoveredLayerId, objects, setActiveObject, syncObjects]);
+
+  useEffect(() => {
+    if (!canvas || !canvas.getElement() || !canvas.getContext()) {
+      return undefined;
+    }
+
+    const handleWheel = (event) => {
+      const e = event.e;
+
+      // Only handle zoom when Ctrl key is pressed
+      if (!e.ctrlKey) {
+        return;
+      }
+
+      // Additional canvas validation
+      if (!canvas || !canvas.getContext()) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const delta = e.deltaY;
+      const activeObject = canvas.getActiveObject();
+
+      // Define zoom limits
+      const MIN_ZOOM = 0.2;
+      const MAX_ZOOM = 5;
+      const MIN_OBJECT_SCALE = 0.1;
+      const MAX_OBJECT_SCALE = 10;
+      
+      try {
+        if (activeObject) {
+          // OBJECT SCALE - Scale selected object
+          let scale = activeObject.scaleX || 1;
+          scale *= delta > 0 ? 0.95 : 1.05;
+          scale = Math.max(MIN_OBJECT_SCALE, Math.min(scale, MAX_OBJECT_SCALE));
+
+          activeObject.set({
+            scaleX: scale,
+            scaleY: scale,
+          });
+          activeObject.setCoords();
+
+          // Only render if canvas context is available
+          if (canvas.getContext()) {
+            canvas.requestRenderAll();
+            snapshotCanvas(canvas);
+          }
+        } else {
+          // CANVAS ZOOM - Zoom canvas centered at mouse position
+          let currentZoom = canvas.getZoom();
+          currentZoom *= delta > 0 ? 0.95 : 1.05;
+          currentZoom = Math.max(MIN_ZOOM, Math.min(currentZoom, MAX_ZOOM));
+
+          // Use correct pointer coordinates (e.offsetX, e.offsetY) instead of transformed coordinates
+          const point = new fabric.Point(e.offsetX, e.offsetY);
+
+          // Use Fabric.js built-in zoomToPoint for proper zoom behavior
+          canvas.zoomToPoint(point, currentZoom);
+
+          // Update zoom state
+          setZoom(currentZoom);
+
+          // Optional: Prevent canvas drift by constraining viewport
+          const vpt = canvas.viewportTransform;
+          if (vpt) {
+            const canvasWidth = canvas.getWidth();
+            const canvasHeight = canvas.getHeight();
+            
+            vpt[4] = Math.min(0, Math.max(vpt[4], canvasWidth - canvasWidth * currentZoom));
+            vpt[5] = Math.min(0, Math.max(vpt[5], canvasHeight - canvasHeight * currentZoom));
+            
+            canvas.setViewportTransform(vpt);
+          }
+
+          // Only render if canvas context is available
+          if (canvas.getContext()) {
+            canvas.requestRenderAll();
+            persistEditorSession(canvas);
+          }
+        }
+      } catch (error) {
+        console.warn('Zoom operation failed:', error);
+      }
+    };
+
+    // Use Fabric.js built-in mouse:wheel event
+    canvas.on('mouse:wheel', handleWheel);
+
+    return () => {
+      canvas.off('mouse:wheel', handleWheel);
+    };
+  }, [canvas, setZoom, persistEditorSession, snapshotCanvas]);
+
+  useEffect(() => {
+    if (!canvas) {
+      return;
+    }
+
+    // Sync layer selection with Fabric canvas
+    const objects = canvas.getObjects().filter(obj =>
+      selectedLayerIds.includes(obj.editorId)
+    );
+
+    if (objects.length > 1) {
+      // Create multi-selection
+      const selection = new fabric.ActiveSelection(objects, {
+        canvas: canvas,
+      });
+      canvas.setActiveObject(selection);
+      setActiveObject(selection);
+    } else if (objects.length === 1) {
+      // Single selection
+      canvas.setActiveObject(objects[0]);
+      setActiveObject(objects[0]);
+    } else {
+      // No selection
+      canvas.discardActiveObject();
+      setActiveObject(null);
+    }
+
+    canvas.requestRenderAll();
+  }, [selectedLayerIds, canvas, setActiveObject]);
 
   useEffect(() => {
     if (!canvas || objects.length === 0 || historyIndex !== -1) {
@@ -471,6 +732,30 @@ export default function Editor({ imageUrl }) {
   }, []);
 
   const resolveToolSourceObject = useCallback(() => getSelectedOrBaseImageObject(canvas), [canvas]);
+
+  const findImageTargetUnderCursor = useCallback((event) => {
+    if (!canvas || !event) {
+      return null;
+    }
+    
+    let pointer;
+    if (event.clientX !== undefined && event.clientY !== undefined) {
+      // Direct pointer coordinates (like from mock events)
+      pointer = { x: event.clientX, y: event.clientY };
+    } else {
+      // Fabric.js event structure
+      pointer = canvas.getPointer(event);
+    }
+    
+    const target = canvas.findTarget(pointer, null);
+    
+    // Only return image objects (not groups, text, shapes, etc.)
+    if (target && target.type === "image" && !target.excludeFromLayer) {
+      return target;
+    }
+    
+    return null;
+  }, [canvas]);
 
   const handleToolObjectCreated = useCallback(
     (fabricObject) => {
@@ -515,7 +800,7 @@ export default function Editor({ imageUrl }) {
         crop: new CropTool({
           canvas,
           fabric,
-          getSourceObject: resolveToolSourceObject,
+          findImageTargetUnderCursor,
           onObjectCreated: handleToolObjectCreated,
           onRequestToolChange: requestToolChange,
           onWarning: setToolMessage,
@@ -523,7 +808,7 @@ export default function Editor({ imageUrl }) {
         draw: new DrawTool({
           canvas,
           fabric,
-          getSourceObject: resolveToolSourceObject,
+          findImageTargetUnderCursor,
           onObjectCreated: handleToolObjectCreated,
           onRequestToolChange: requestToolChange,
           onWarning: setToolMessage,
@@ -531,6 +816,7 @@ export default function Editor({ imageUrl }) {
         eraser: new EraserTool({
           canvas,
           fabric,
+          findImageTargetUnderCursor,
           onCanvasMutation: handleEraserMutation,
           onWarning: setToolMessage,
         }),
@@ -546,7 +832,7 @@ export default function Editor({ imageUrl }) {
         toolManagerRef.current = null;
       }
     };
-  }, [canvas, handleEraserMutation, handleToolObjectCreated, requestToolChange, resolveToolSourceObject]);
+  }, [canvas, handleEraserMutation, handleToolObjectCreated, requestToolChange, resolveToolSourceObject, findImageTargetUnderCursor]);
 
   const activeToolOptions = activeTool === "draw" ? toolSettings.draw : activeTool === "eraser" ? toolSettings.eraser : undefined;
 
@@ -716,6 +1002,175 @@ export default function Editor({ imageUrl }) {
     snapshotCanvas(canvas);
   }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects]);
 
+  const addObjectToCanvas = useCallback(
+    (fabricObject, { offset = 28, prefix = "Object" } = {}) => {
+      if (!canvas || !fabricObject) {
+        return;
+      }
+
+      assignObjectMeta(fabricObject, getNextObjectName(canvas, prefix), fabricObject.editorKind || "object", {
+        forceNewId: true,
+      });
+      fabricObject.isBaseImage = false;
+      fabricObject.set({
+        left: (fabricObject.left || 0) + offset,
+        top: (fabricObject.top || 0) + offset,
+        visible: true,
+        opacity: 1,
+        selectable: true,
+        evented: true,
+      });
+      fabricObject.setCoords();
+
+      canvas.add(fabricObject);
+      canvas.setActiveObject(fabricObject);
+      setActiveObject(fabricObject);
+      refreshSelectionOutline(fabricObject);
+      canvas.requestRenderAll();
+      syncObjects(canvas);
+      snapshotCanvas(canvas);
+    },
+    [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects],
+  );
+
+  const copySelected = useCallback(async () => {
+    const selectedObject = canvas?.getActiveObject();
+
+    if (!selectedObject || selectedObject.type === "activeSelection") {
+      return;
+    }
+
+    if (selectedObject.type === "image" && typeof selectedObject.toDataURL === "function") {
+      const dataUrl = selectedObject.toDataURL({
+        format: "png",
+        multiplier: 1,
+      });
+
+      if (dataUrl && dataUrl.length > 100) {
+        clipboardObjectRef.current = {
+          type: "rasterImage",
+          dataUrl,
+          editorKind: selectedObject.editorKind || "image",
+          width: selectedObject.getScaledWidth?.() || selectedObject.width || 0,
+          height: selectedObject.getScaledHeight?.() || selectedObject.height || 0,
+        };
+        return;
+      }
+    }
+
+    clipboardObjectRef.current = {
+      type: "fabricObject",
+      object: await cloneFabricObject(selectedObject),
+    };
+  }, [canvas]);
+
+  const pasteCopied = useCallback(async () => {
+    if (!canvas || !clipboardObjectRef.current) {
+      return false;
+    }
+
+    if (clipboardObjectRef.current.type === "rasterImage") {
+      fabric.Image.fromURL(clipboardObjectRef.current.dataUrl, (image) => {
+        if (!image || !image.width || !image.height) {
+          return;
+        }
+
+        const maxWidth = Math.max(160, canvas.getWidth() * 0.75);
+        const maxHeight = Math.max(160, canvas.getHeight() * 0.75);
+        const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+
+        image.set({
+          left: (canvas.getWidth() - image.width * scale) / 2,
+          top: (canvas.getHeight() - image.height * scale) / 2,
+          scaleX: scale,
+          scaleY: scale,
+          selectable: true,
+          evented: true,
+          erasable: true,
+          visible: true,
+          opacity: 1,
+        });
+
+        image.editorKind = clipboardObjectRef.current.editorKind || "image";
+        addObjectToCanvas(image, { offset: 0, prefix: "Object" });
+      });
+
+      return true;
+    }
+
+    const pastedObject = await cloneFabricObject(clipboardObjectRef.current.object);
+    const prefixByKind = {
+      text: "Text",
+      shape: "Shape",
+      crop: "Crop",
+      cut: "Cut",
+      draw: "Draw",
+      line: "Line",
+      arrow: "Arrow",
+      upload: "Object",
+      image: "Object",
+    };
+    const prefix = prefixByKind[pastedObject.editorKind] || "Object";
+
+    addObjectToCanvas(pastedObject, { prefix });
+    return true;
+  }, [addObjectToCanvas, canvas]);
+
+  const pasteClipboardImage = useCallback(
+    async (clipboardData) => {
+      if (!canvas || !clipboardData?.items?.length) {
+        return false;
+      }
+
+      const imageItem = [...clipboardData.items].find((item) => item.type?.startsWith("image/"));
+
+      if (!imageItem) {
+        return false;
+      }
+
+      const file = imageItem.getAsFile();
+
+      if (!file) {
+        return false;
+      }
+
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onload = (event) => resolve(event.target?.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      fabric.Image.fromURL(dataUrl, (image) => {
+        if (!image) {
+          return;
+        }
+
+        const maxWidth = Math.max(160, canvas.getWidth() * 0.75);
+        const maxHeight = Math.max(160, canvas.getHeight() * 0.75);
+        const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+
+        image.set({
+          left: (canvas.getWidth() - (image.width || 0) * scale) / 2,
+          top: (canvas.getHeight() - (image.height || 0) * scale) / 2,
+          scaleX: scale,
+          scaleY: scale,
+          selectable: true,
+          evented: true,
+          erasable: true,
+          visible: true,
+          opacity: 1,
+        });
+
+        addObjectToCanvas(image, { offset: 0, prefix: "Object" });
+      });
+
+      return true;
+    },
+    [addObjectToCanvas, canvas],
+  );
+
   const uploadImage = useCallback(
     (file) => {
       if (!canvas) {
@@ -844,11 +1299,18 @@ export default function Editor({ imageUrl }) {
         refreshSelectionOutline(null);
         canvas.requestRenderAll();
         syncObjects(canvas);
+        if (activeWorkspaceId) {
+          saveWorkspace(activeWorkspaceId, {
+            canvasJSON: JSON.parse(historyRef.current[nextIndex]),
+            history: historyRef.current,
+            historyIndex: nextIndex,
+          });
+        }
         persistEditorSession(canvas, historyRef.current[nextIndex]);
         isRestoringHistoryRef.current = false;
       });
     },
-    [canvas, persistEditorSession, refreshSelectionOutline, setActiveObject, syncObjects],
+    [activeWorkspaceId, canvas, persistEditorSession, refreshSelectionOutline, saveWorkspace, setActiveObject, syncObjects],
   );
 
   const undo = useCallback(() => {
@@ -863,14 +1325,94 @@ export default function Editor({ imageUrl }) {
     }
   }, [loadHistoryState]);
 
+  const saveActiveWorkspaceState = useCallback(() => {
+    if (!canvas || !activeWorkspaceId) {
+      return;
+    }
+
+    saveWorkspace(activeWorkspaceId, {
+      canvasJSON: canvas.toJSON(FABRIC_SERIALIZATION_PROPS),
+      history: historyRef.current,
+      historyIndex: historyIndexRef.current,
+    });
+  }, [activeWorkspaceId, canvas, saveWorkspace]);
+
+  const handleSwitchWorkspace = useCallback(
+    (workspaceId) => {
+      saveActiveWorkspaceState();
+      switchWorkspace(workspaceId, canvas);
+    },
+    [canvas, saveActiveWorkspaceState, switchWorkspace],
+  );
+
+  const handleCreateWorkspace = useCallback(
+    (name) => {
+      saveActiveWorkspaceState();
+      createWorkspaceFromCurrentCanvas(canvas, name?.trim() || "New");
+    },
+    [canvas, createWorkspaceFromCurrentCanvas, saveActiveWorkspaceState],
+  );
+
+  const handleDeleteWorkspace = useCallback(
+    (workspaceId) => {
+      if (workspaces.length <= 1) {
+        return;
+      }
+
+      const remainingWorkspaces = workspaces.filter((workspace) => workspace.id !== workspaceId);
+      const nextActiveId =
+        workspaceId === activeWorkspaceId
+          ? remainingWorkspaces[0]?.id
+          : activeWorkspaceId;
+
+      if (workspaceId === activeWorkspaceId) {
+        previousWorkspaceIdRef.current = "";
+      } else {
+        saveActiveWorkspaceState();
+      }
+
+      setWorkspaces(remainingWorkspaces);
+
+      if (nextActiveId) {
+        setActiveWorkspaceId(nextActiveId);
+      }
+    },
+    [activeWorkspaceId, saveActiveWorkspaceState, setActiveWorkspaceId, setWorkspaces, workspaces],
+  );
+
   const zoomIn = useCallback(() => {
     if (!canvas) {
       return;
     }
 
     const nextZoom = Math.min(zoom * 1.2, 5);
+    const activeObject = canvas.getActiveObject();
+    
+    if (activeObject) {
+      // Get the center point of the selected object
+      const objectCenter = activeObject.getCenterPoint();
+      
+      // Calculate the viewport transform to center on the object
+      const canvasCenter = new fabric.Point(canvas.getWidth() / 2, canvas.getHeight() / 2);
+      const viewportTransform = canvas.viewportTransform;
+      
+      // Calculate the new viewport transform to zoom into the object
+      const newViewportTransform = [
+        nextZoom,
+        0,
+        0,
+        nextZoom,
+        canvasCenter.x - objectCenter.x * nextZoom,
+        canvasCenter.y - objectCenter.y * nextZoom
+      ];
+      
+      canvas.setViewportTransform(newViewportTransform);
+    } else {
+      // No object selected, zoom to canvas center
+      canvas.setZoom(nextZoom);
+    }
+    
     setZoom(nextZoom);
-    canvas.setZoom(nextZoom);
     canvas.requestRenderAll();
     persistEditorSession(canvas);
   }, [canvas, persistEditorSession, zoom]);
@@ -881,8 +1423,33 @@ export default function Editor({ imageUrl }) {
     }
 
     const nextZoom = Math.max(zoom / 1.2, 0.1);
+    const activeObject = canvas.getActiveObject();
+    
+    if (activeObject) {
+      // Get the center point of the selected object
+      const objectCenter = activeObject.getCenterPoint();
+      
+      // Calculate the viewport transform to center on the object
+      const canvasCenter = new fabric.Point(canvas.getWidth() / 2, canvas.getHeight() / 2);
+      const viewportTransform = canvas.viewportTransform;
+      
+      // Calculate the new viewport transform to zoom into the object
+      const newViewportTransform = [
+        nextZoom,
+        0,
+        0,
+        nextZoom,
+        canvasCenter.x - objectCenter.x * nextZoom,
+        canvasCenter.y - objectCenter.y * nextZoom
+      ];
+      
+      canvas.setViewportTransform(newViewportTransform);
+    } else {
+      // No object selected, zoom to canvas center
+      canvas.setZoom(nextZoom);
+    }
+    
     setZoom(nextZoom);
-    canvas.setZoom(nextZoom);
     canvas.requestRenderAll();
     persistEditorSession(canvas);
   }, [canvas, persistEditorSession, zoom]);
@@ -892,12 +1459,69 @@ export default function Editor({ imageUrl }) {
       return;
     }
 
+    // Clear all objects from canvas
+    canvas.clear();
+    
+    // Reset zoom and viewport
     setZoom(1);
     canvas.setZoom(1);
     canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-    canvas.requestRenderAll();
-    persistEditorSession(canvas);
-  }, [canvas, persistEditorSession]);
+    
+    // Restore the original uploaded image
+    // We need to reload the original image from the stored URL
+    // since cropping might have replaced the base image
+    if (imageUrl) {
+      // Create a new image from the original URL
+      fabric.Image.fromURL(imageUrl, (originalImage) => {
+        if (!originalImage) {
+          console.error("Failed to load original image for reset");
+          return;
+        }
+        
+        // Set the original image properties to center it
+        originalImage.set({
+          left: canvas.getWidth() / 2,
+          top: canvas.getHeight() / 2,
+          originX: 'center',
+          originY: 'center',
+          scaleX: 1,
+          scaleY: 1,
+          angle: 0,
+          visible: true,
+          selectable: true,
+          evented: true,
+        });
+        
+        // Add metadata to the original image
+        assignObjectMeta(originalImage, "Original Image", "image");
+        originalImage.isBaseImage = true;
+        originalImage.setCoords();
+        
+        // Add the original image to canvas
+        canvas.add(originalImage);
+        canvas.setActiveObject(originalImage);
+        setActiveObject(originalImage);
+        baseImageIdRef.current = originalImage.editorId;
+        
+        // Apply selection outline
+        refreshSelectionOutline(originalImage);
+        canvas.requestRenderAll();
+        syncObjects(canvas);
+        persistEditorSession(canvas);
+      });
+    }
+    
+    // Clear history and reset state
+    setHistory([]);
+    setHistoryIndex(-1);
+    historyRef.current = [];
+    historyIndexRef.current = -1;
+    restoredSessionRef.current = false;
+    
+    // Clear any active tool
+    setActiveTool("select");
+    setToolMessage("");
+  }, [canvas, persistEditorSession, refreshSelectionOutline, setActiveObject, syncObjects, imageUrl]);
 
   const saveProject = useCallback(() => {
     if (!canvas) {
@@ -955,6 +1579,108 @@ export default function Editor({ imageUrl }) {
     downloadLink.click();
   }, [canvas]);
 
+  const groupSelected = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    const activeObject = canvas.getActiveObject();
+    
+    // If we have multiple objects selected, group them
+    if (activeObject && activeObject.type === 'activeSelection') {
+      const objects = activeObject.getObjects();
+      if (objects.length > 1) {
+        // Store original names before grouping
+        const originalNames = objects.map(obj => ({
+          name: obj.editorName || obj.name || "Object",
+          type: obj.type || "object"
+        }));
+        
+        // Use Fabric.js's built-in toGroup method which handles positioning correctly
+        const group = activeObject.toGroup();
+        
+        // Assign metadata to the group
+        assignObjectMeta(group, getNextObjectName(canvas, "Group"), "group");
+        group.isBaseImage = false;
+        
+        // Store original names in the group object for later restoration
+        group.originalNames = originalNames;
+        
+        // Ensure the group is visible and has proper properties
+        group.set({
+          visible: true,
+          selectable: true,
+          evented: true,
+        });
+        
+        // Set the group as the active object
+        canvas.setActiveObject(group);
+        setActiveObject(group);
+        refreshSelectionOutline(group);
+        canvas.requestRenderAll();
+        syncObjects(canvas);
+        snapshotCanvas(canvas);
+      }
+    }
+  }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects]);
+
+  const ungroupSelected = useCallback(() => {
+    if (!canvas) {
+      return;
+    }
+
+    const activeObject = canvas.getActiveObject();
+    
+    // If we have a group selected, ungroup it
+    if (activeObject && activeObject.type === 'group') {
+      // Use Fabric.js's built-in toActiveSelection method
+      const selection = activeObject.toActiveSelection();
+      
+      // Ensure all objects are visible and selectable
+      const objects = selection.getObjects();
+      objects.forEach((obj, index) => {
+        obj.set({
+          visible: true,
+          selectable: true,
+          evented: true,
+        });
+        
+        // Restore original name if available, otherwise use generic name
+        const originalName = activeObject.originalNames?.[index]?.name || `${activeObject.editorName || "Group"} Item ${index + 1}`;
+        const originalType = activeObject.originalNames?.[index]?.type || obj.type || "object";
+        
+        // Assign metadata to individual objects with original names
+        assignObjectMeta(obj, originalName, originalType);
+        obj.isBaseImage = false;
+      });
+      
+      // Set the selection as the active object
+      canvas.setActiveObject(selection);
+      setActiveObject(selection);
+      refreshSelectionOutline(selection);
+      canvas.requestRenderAll();
+      syncObjects(canvas);
+      snapshotCanvas(canvas);
+    }
+  }, [canvas, refreshSelectionOutline, setActiveObject, snapshotCanvas, syncObjects]);
+
+  const toggleGroup = useCallback(() => {
+    const activeObject = canvas?.getActiveObject();
+    
+    if (!activeObject) {
+      return;
+    }
+    
+    // If multiple objects are selected (activeSelection), group them
+    if (activeObject.type === 'activeSelection') {
+      groupSelected();
+    }
+    // If a group is selected, ungroup it
+    else if (activeObject.type === 'group') {
+      ungroupSelected();
+    }
+  }, [canvas, groupSelected, ungroupSelected]);
+
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (!canvas) {
@@ -973,6 +1699,24 @@ export default function Editor({ imageUrl }) {
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        void copySelected();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        void copySelected().then(() => deleteSelected());
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v" && clipboardObjectRef.current) {
+        event.preventDefault();
+        void pasteCopied();
+        return;
+      }
+
       if (event.ctrlKey && event.key.toLowerCase() === "d") {
         event.preventDefault();
         duplicateSelected();
@@ -988,6 +1732,12 @@ export default function Editor({ imageUrl }) {
       if (event.ctrlKey && event.key.toLowerCase() === "y") {
         event.preventDefault();
         redo();
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "g") {
+        event.preventDefault();
+        toggleGroup();
         return;
       }
 
@@ -1030,7 +1780,29 @@ export default function Editor({ imageUrl }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [addArrow, addLine, addShape, addText, canvas, deleteSelected, duplicateSelected, redo, selectTool, undo]);
+  }, [addArrow, addLine, addShape, addText, canvas, copySelected, deleteSelected, duplicateSelected, pasteCopied, redo, selectTool, toggleGroup, undo]);
+
+  useEffect(() => {
+    const handlePaste = (event) => {
+      const targetTag = event.target?.tagName;
+
+      if (targetTag === "INPUT" || targetTag === "TEXTAREA" || targetTag === "SELECT") {
+        return;
+      }
+
+      const hasClipboardImage = [...(event.clipboardData?.items || [])].some((item) =>
+        item.type?.startsWith("image/"),
+      );
+
+      if (hasClipboardImage) {
+        event.preventDefault();
+        void pasteClipboardImage(event.clipboardData);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [pasteClipboardImage]);
 
   if (!imageUrl) {
     return <MissingImageState />;
@@ -1038,6 +1810,17 @@ export default function Editor({ imageUrl }) {
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
+      {/* Workspace Manager */}
+      <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-700">
+        <WorkspaceManager
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onSwitchWorkspace={handleSwitchWorkspace}
+          onCreateWorkspace={handleCreateWorkspace}
+          onDeleteWorkspace={handleDeleteWorkspace}
+        />
+      </div>
+
       <TopBar
         canvas={canvas}
         onUndo={undo}
@@ -1074,6 +1857,12 @@ export default function Editor({ imageUrl }) {
           <FloatingToolbar
             selectedObject={activeObject}
             canvas={canvas}
+            onGroup={toggleGroup}
+            onUngroup={ungroupSelected}
+            onDelete={deleteSelected}
+            onDuplicate={duplicateSelected}
+            onSelectTool={selectTool}
+            activeTool={activeTool}
             onUpdate={() => {
               if (!canvas) {
                 return;

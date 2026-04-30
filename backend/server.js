@@ -13,7 +13,7 @@ const allowedOrigins = (
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
-console.log("API KEY:", process.env.WxgkQL5AJk4GACzayDeXUFq3);
+console.log("API KEY:", process.env.REMOVE_BG_API_KEY);
 // app.use(
 //   cors({  
 //     origin(origin, callback) {

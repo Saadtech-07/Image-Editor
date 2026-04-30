@@ -76,16 +76,7 @@ export default function LeftSidebar({
     }
   }, [activeTool]);
 
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (sidebarRef.current && !sidebarRef.current.contains(event.target)) {
-        setOpenPanel(null);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  // Removed auto-close behavior to keep Tools panel open during editing
 
   const handleUpload = () => {
     const input = document.createElement("input");

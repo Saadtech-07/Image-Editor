@@ -1,20 +1,16 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, ImagePlus, Loader2, UploadCloud, WandSparkles } from "lucide-react";
+import { ArrowRight, ImagePlus, Loader2, UploadCloud } from "lucide-react";
 import Header from "../components/layout/Header.jsx";
-import { removeBackground } from "../utils/imageHelpers.js";
 
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
-function PreviewPanel({ title, imageUrl, emptyLabel, isProcessed }) {
+function PreviewPanel({ title, imageUrl, emptyLabel }) {
   return (
     <section className="bg-white rounded-xl shadow-lg border border-gray-200 p-6 flex min-h-[420px] flex-col">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-600">{title}</h2>
-        {isProcessed ? (
-          <span className="rounded-lg bg-green-100 px-3 py-1 text-xs font-semibold text-green-700">PNG</span>
-        ) : null}
       </div>
         
       <div className="checkerboard mt-4 grid flex-1 place-items-center overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
@@ -30,10 +26,8 @@ function PreviewPanel({ title, imageUrl, emptyLabel, isProcessed }) {
 
 export default function Homepage({ imageState, onUpload, onProcessed }) {
   const inputRef = useRef(null);
-  const removeInFlightRef = useRef(false);
   const navigate = useNavigate();
   const [isDragging, setIsDragging] = useState(false);
-  const [isRemoving, setIsRemoving] = useState(false);
   const [error, setError] = useState("");
 
   const uploadFile = (file) => {
@@ -45,26 +39,7 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
     }
   };
 
-  const handleRemoveBackground = async () => {
-    if (!imageState.originalFile || removeInFlightRef.current) {
-      return;
-    }
-
-    removeInFlightRef.current = true;
-    setIsRemoving(true);
-    setError("");
-
-    try {
-      const processedBlob = await removeBackground(imageState.originalFile, API_URL);
-      onProcessed(processedBlob);
-    } catch (removeError) {
-      setError(removeError.message || "Background removal failed.");
-    } finally {
-      removeInFlightRef.current = false;
-      setIsRemoving(false);
-    }
-  };
-
+  
   const handleDrop = (event) => {
     event.preventDefault();
     setIsDragging(false);
@@ -110,17 +85,8 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
             </button>
             <button
               type="button"
-              onClick={handleRemoveBackground}
-              disabled={!imageState.originalFile || isRemoving}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isRemoving ? <Loader2 className="animate-spin" size={18} /> : <WandSparkles size={18} />}
-              Remove Background
-            </button>
-            <button
-              type="button"
               onClick={() => navigate("/editor")}
-              disabled={!imageState.processedUrl}
+              disabled={!imageState.originalUrl}
               className="inline-flex items-center gap-2 rounded-lg bg-green-500 px-4 py-2 text-sm font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Open Editor
@@ -152,14 +118,8 @@ export default function Homepage({ imageState, onUpload, onProcessed }) {
             </span>
           </button>
         ) : (
-          <div className="grid gap-5 lg:grid-cols-2">
+          <div className="grid gap-5 lg:grid-cols-1">
             <PreviewPanel title="Original Image" imageUrl={imageState.originalUrl} emptyLabel="Upload an image to begin." />
-            <PreviewPanel
-              title="Processed Image"
-              imageUrl={imageState.processedUrl}
-              emptyLabel={isRemoving ? "Removing background..." : "Run background removal to see the transparent result."}
-              isProcessed={Boolean(imageState.processedUrl)}
-            />
           </div>
         )}
 

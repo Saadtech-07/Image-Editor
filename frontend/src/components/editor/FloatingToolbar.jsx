@@ -1,10 +1,22 @@
 import { useState, useEffect, useRef } from "react";
-import { RotateCw, FlipHorizontal, Square } from "lucide-react";
+import { 
+  RotateCw, 
+  FlipHorizontal, 
+  Group, 
+  Ungroup, 
+  Trash2, 
+  Copy, 
+  Download,
+  WandSparkles,
+  Crop,
+  Brush,
+  Eraser
+} from "lucide-react";
+import { removeBackground } from "../../utils/imageHelpers.js";
 
-export default function FloatingToolbar({ selectedObject, canvas, onUpdate }) {
-  const [cornerRadius, setCornerRadius] = useState(0);
-  const [showRadiusSlider, setShowRadiusSlider] = useState(false);
+export default function FloatingToolbar({ selectedObject, canvas, onUpdate, onGroup, onUngroup, onDelete, onDuplicate, onSelectTool, activeTool }) {
   const toolbarRef = useRef(null);
+  const [isRemovingBG, setIsRemovingBG] = useState(false);
 
   // Calculate toolbar position
   const getToolbarPosition = () => {
@@ -44,71 +56,172 @@ export default function FloatingToolbar({ selectedObject, canvas, onUpdate }) {
     onUpdate?.();
   };
 
-  // Handle corner radius
-  const handleCornerRadius = (radius) => {
+  // Handle group/ungroup
+  const handleGroupToggle = () => {
     if (!selectedObject) return;
-
-    setCornerRadius(radius);
-
-    if (selectedObject.type === 'image') {
-      // Calculate actual dimensions
-      const actualWidth = selectedObject.width * selectedObject.scaleX;
-      const actualHeight = selectedObject.height * selectedObject.scaleY;
-      
-      // Convert percentage to actual radius
-      // For 100% to create a circle, use half of the smaller dimension
-      const maxRadius = Math.min(actualWidth, actualHeight) / 2;
-      const finalRadius = (radius / 100) * maxRadius;
-      
-      // Remove existing clipPath if any
-      if (selectedObject.clipPath) {
-        selectedObject.clipPath = null;
-      }
-      
-      // Create rounded rectangle clipPath
-      const clipPath = new fabric.Rect({
-        width: actualWidth,
-        height: actualHeight,
-        rx: finalRadius,
-        ry: finalRadius,
-        originX: "center",
-        originY: "center",
-        absolutePositioned: false,
-      });
-      
-      selectedObject.clipPath = clipPath;
-    } else if (selectedObject.type === 'rect') {
-      // For rectangles, use rx/ry properties
-      const actualWidth = selectedObject.width * selectedObject.scaleX;
-      const actualHeight = selectedObject.height * selectedObject.scaleY;
-      const maxRadius = Math.min(actualWidth, actualHeight) / 2;
-      const finalRadius = (radius / 100) * maxRadius;
-      
-      selectedObject.set({
-        rx: finalRadius,
-        ry: finalRadius,
-      });
+    
+    if (selectedObject.type === 'activeSelection' || (selectedObject.type !== 'group' && canvas.getActiveObjects().length > 1)) {
+      onGroup?.();
+    } else if (selectedObject.type === 'group') {
+      onUngroup?.();
     }
-
-    canvas.renderAll();
-    onUpdate?.();
   };
 
-  // Close radius slider when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (toolbarRef.current && !toolbarRef.current.contains(event.target)) {
-        setShowRadiusSlider(false);
-      }
-    };
+  // Handle delete
+  const handleDelete = () => {
+    if (!selectedObject) return;
+    onDelete?.();
+  };
 
-    if (showRadiusSlider) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
+  // Handle duplicate
+  const handleDuplicate = () => {
+    if (!selectedObject) return;
+    onDuplicate?.();
+  };
+
+  // Handle remove background
+  const handleRemoveBG = async () => {
+    if (!selectedObject || selectedObject.type !== 'image' || isRemovingBG) return;
+
+    setIsRemovingBG(true);
+
+    try {
+      // Convert fabric image to dataURL, then to blob
+      const dataURL = selectedObject.toDataURL({
+        format: "png",
+        multiplier: 1,
+      });
+
+      // Convert dataURL to blob
+      const blob = await new Promise((resolve) => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        
+        img.onload = () => {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+          canvas.toBlob(resolve, 'image/png');
+        };
+        
+        img.src = dataURL;
+      });
+
+      // Create File from blob
+      const imageFile = new File([blob], "image.png", { type: "image/png" });
+
+      // Use existing removeBackground function with correct API URL
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+      const processedBlob = await removeBackground(imageFile, API_URL);
+
+      // Create URL for processed image
+      const processedUrl = URL.createObjectURL(processedBlob);
+
+      // Load processed image back to canvas
+      const { fabric } = await import('fabric');
+      
+      fabric.Image.fromURL(processedUrl, (processedImage) => {
+        // Copy all properties from original image
+        processedImage.set({
+          left: selectedObject.left,
+          top: selectedObject.top,
+          scaleX: selectedObject.scaleX,
+          scaleY: selectedObject.scaleY,
+          angle: selectedObject.angle,
+          originX: selectedObject.originX,
+          originY: selectedObject.originY,
+          selectable: true,
+          evented: true,
+        });
+
+        // Copy editor metadata
+        if (selectedObject.editorId) {
+          processedImage.editorId = selectedObject.editorId;
+        }
+        if (selectedObject.name) {
+          processedImage.name = selectedObject.name;
+        }
+
+        // Replace image
+        canvas.remove(selectedObject);
+        canvas.add(processedImage);
+        canvas.setActiveObject(processedImage);
+        canvas.requestRenderAll();
+
+        // Clean up URL
+        URL.revokeObjectURL(processedUrl);
+
+        // Notify parent
+        onUpdate?.();
+      });
+
+    } catch (error) {
+      console.error("Remove BG failed:", error);
+    } finally {
+      setIsRemovingBG(false);
     }
-  }, [showRadiusSlider]);
+  };
+
+  // Handle download
+  const handleDownload = () => {
+    if (!selectedObject) return;
+    
+    // Create a temporary canvas with just the selected object
+    const tempCanvas = new fabric.Canvas(null, {
+      width: selectedObject.width * (selectedObject.scaleX || 1),
+      height: selectedObject.height * (selectedObject.scaleY || 1),
+    });
+    
+    // Clone the selected object
+    selectedObject.clone((clonedObj) => {
+      // Reset position to top-left corner
+      clonedObj.set({
+        left: 0,
+        top: 0,
+        originX: 'left',
+        originY: 'top',
+      });
+      
+      tempCanvas.add(clonedObj);
+      tempCanvas.renderAll();
+      
+      // Download the canvas as image
+      const dataURL = tempCanvas.toDataURL({
+        format: 'png',
+        multiplier: 2,
+      });
+      
+      const link = document.createElement('a');
+      link.download = `${selectedObject.editorName || 'object'}.png`;
+      link.href = dataURL;
+      link.click();
+      
+      tempCanvas.dispose();
+    });
+  };
+
+  // Handle tool shortcuts
+  const handleCropTool = () => {
+    onSelectTool?.('crop');
+  };
+
+  const handleDrawTool = () => {
+    onSelectTool?.('draw');
+  };
+
+  const handleEraserTool = () => {
+    onSelectTool?.('eraser');
+  };
 
   if (!selectedObject) return null;
+
+  // Check if group button should show as ungroup
+  const isGrouped = selectedObject.type === 'group';
+  const canGroup = selectedObject.type === 'activeSelection' || canvas.getActiveObjects().length > 1;
+  
+  // Check if remove background should show (only for images)
+  const canRemoveBG = selectedObject.type === 'image';
 
   return (
     <div
@@ -138,34 +251,101 @@ export default function FloatingToolbar({ selectedObject, canvas, onUpdate }) {
         <FlipHorizontal size={16} />
       </button>
 
-      {/* Corner Radius Button */}
-      <div className="relative">
+      {/* Group/Ungroup Button */}
+      {(canGroup || isGrouped) && (
         <button
-          onClick={() => setShowRadiusSlider(!showRadiusSlider)}
+          onClick={handleGroupToggle}
           className="flex items-center justify-center w-8 h-8 text-slate-300 hover:text-white hover:bg-slate-600 rounded transition-colors"
-          title="Corner Radius"
+          title={isGrouped ? "Ungroup" : "Group"}
         >
-          <Square size={16} />
+          {isGrouped ? <Ungroup size={16} /> : <Group size={16} />}
         </button>
+      )}
 
-        {/* Radius Slider Popup */}
-        {showRadiusSlider && (
-          <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-[#111827] border border-slate-600 rounded-lg shadow-lg p-3 w-48">
-            <div className="space-y-2">
-              <label className="text-xs text-slate-300 font-medium">Corner Radius</label>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={cornerRadius}
-                onChange={(e) => handleCornerRadius(Number(e.target.value))}
-                className="w-full accent-teal-500"
-              />
-              <div className="text-xs text-slate-400 text-center">{cornerRadius}%</div>
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Remove Background Button */}
+      {canRemoveBG && (
+        <button
+          onClick={handleRemoveBG}
+          disabled={isRemovingBG}
+          className="flex items-center justify-center w-8 h-8 text-slate-300 hover:text-white hover:bg-purple-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Remove Background"
+        >
+          {isRemovingBG ? (
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <WandSparkles size={16} />
+          )}
+        </button>
+      )}
+
+      {/* Delete Button */}
+      <button
+        onClick={handleDelete}
+        className="flex items-center justify-center w-8 h-8 text-slate-300 hover:text-white hover:bg-red-600 rounded transition-colors"
+        title="Delete"
+      >
+        <Trash2 size={16} />
+      </button>
+
+      {/* Duplicate Button */}
+      <button
+        onClick={handleDuplicate}
+        className="flex items-center justify-center w-8 h-8 text-slate-300 hover:text-white hover:bg-slate-600 rounded transition-colors"
+        title="Duplicate"
+      >
+        <Copy size={16} />
+      </button>
+
+      {/* Download Button */}
+      <button
+        onClick={handleDownload}
+        className="flex items-center justify-center w-8 h-8 text-slate-300 hover:text-white hover:bg-slate-600 rounded transition-colors"
+        title="Download"
+      >
+        <Download size={16} />
+      </button>
+
+      {/* Tool Shortcuts Divider */}
+      <div className="w-px h-6 bg-slate-600 mx-1" />
+
+      {/* Crop Tool Button */}
+      <button
+        onClick={handleCropTool}
+        className={`flex items-center justify-center w-8 h-8 rounded transition-colors ${
+          activeTool === 'crop' 
+            ? 'text-white bg-green-600' 
+            : 'text-slate-300 hover:text-white hover:bg-slate-600'
+        }`}
+        title="Crop Tool"
+      >
+        <Crop size={16} />
+      </button>
+
+      {/* Draw Tool Button */}
+      <button
+        onClick={handleDrawTool}
+        className={`flex items-center justify-center w-8 h-8 rounded transition-colors ${
+          activeTool === 'draw' 
+            ? 'text-white bg-blue-600' 
+            : 'text-slate-300 hover:text-white hover:bg-slate-600'
+        }`}
+        title="Draw Tool"
+      >
+        <Brush size={16} />
+      </button>
+
+      {/* Eraser Tool Button */}
+      <button
+        onClick={handleEraserTool}
+        className={`flex items-center justify-center w-8 h-8 rounded transition-colors ${
+          activeTool === 'eraser' 
+            ? 'text-white bg-orange-600' 
+            : 'text-slate-300 hover:text-white hover:bg-slate-600'
+        }`}
+        title="Eraser Tool"
+      >
+        <Eraser size={16} />
+      </button>
     </div>
   );
 }

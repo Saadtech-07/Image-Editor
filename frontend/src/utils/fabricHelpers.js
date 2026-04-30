@@ -29,11 +29,15 @@ export function assignObjectMeta(fabricObject, name, kind = "object", options = 
 
   fabricObject.editorKind = kind;
   fabricObject.set({
-    borderColor: "#5eead4",
-    cornerColor: "#5eead4",
-    cornerSize: 10,
+    borderColor: "#60a5fa",
+    cornerColor: "transparent",
+    cornerStrokeColor: "transparent",
+    cornerSize: 0,
     cornerStyle: "circle",
-    transparentCorners: false,
+    transparentCorners: true,
+    hasBorders: true,
+    hasControls: false,
+    borderDashArray: [5, 5],
     erasable: fabricObject.erasable ?? true,
   });
 
@@ -204,6 +208,21 @@ export function setCanvasObjectInteractivity(canvas, enabled) {
       fabricObject.set({
         selectable: enabled,
         evented: enabled,
+      });
+    }
+  });
+}
+
+export function setCanvasObjectSelection(canvas, enabled) {
+  if (!canvas) {
+    return;
+  }
+
+  canvas.getObjects().forEach((fabricObject) => {
+    if (!fabricObject.excludeFromLayer) {
+      fabricObject.set({
+        selectable: enabled,
+        evented: true, // Keep events enabled for hover detection
       });
     }
   });

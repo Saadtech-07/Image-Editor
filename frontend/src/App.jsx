@@ -86,7 +86,7 @@ function ImageEditorRoutes() {
             />
           }
         />
-        <Route path="/editor" element={<Editor imageUrl={imageState.processedUrl} />} />
+        <Route path="/editor" element={<Editor imageUrl={imageState.processedUrl || imageState.originalUrl} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </EditorProvider>

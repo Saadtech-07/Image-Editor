@@ -29,7 +29,8 @@ export async function removeBackground(originalFile, apiUrl) {
       const payload = await response.json();
       message = payload.details || payload.message || message;
     } catch {
-      message = await response.text();
+      // If JSON parsing fails, the response body might already be consumed
+      message = `Background removal failed with status ${response.status}`;
     }
 
     throw new Error(message);

@@ -285,7 +285,7 @@ function PropertyControls({ activeObject, canvas, syncObjects }) {
 }
 
 export default function RightPanel({ className = "" }) {
-  const { canvas, objects, activeObject, selectObjectById, setActiveObject, syncObjects } = useEditor();
+  const { canvas, objects, activeObject, selectObjectById, setActiveObject, syncObjects, hoveredLayerId, selectedLayerIds, setSelectedLayerIds } = useEditor();
   const [activeTab, setActiveTab] = useState('layers');
 
   const toggleVisibility = (event, layer) => {
@@ -301,6 +301,23 @@ export default function RightPanel({ className = "" }) {
     setActiveObject(null);
     canvas?.requestRenderAll();
     syncObjects(canvas);
+  };
+
+  const handleLayerClick = (event, layer) => {
+    if (event.ctrlKey) {
+      // Multi-selection with Ctrl+click
+      setSelectedLayerIds(prev => {
+        if (prev.includes(layer.id)) {
+          return prev.filter(id => id !== layer.id);
+        } else {
+          return [...prev, layer.id];
+        }
+      });
+    } else {
+      // Single selection
+      setSelectedLayerIds([layer.id]);
+      selectObjectById(layer.id);
+    }
   };
 
   return (
@@ -339,7 +356,54 @@ export default function RightPanel({ className = "" }) {
                 <Layers3 size={18} className="text-teal-200" />
                 <h2 className="font-semibold text-white">Layers</h2>
               </div>
-              <span className="rounded-lg bg-white/[0.08] px-2 py-1 text-xs text-slate-300">{objects.length}</span>
+              <div className="flex items-center gap-2">
+                {/* Group button for multi-selected layers */}
+                {selectedLayerIds.length > 1 && (
+                  <button
+                    onClick={() => {
+                      const active = canvas.getActiveObject();
+                      if (active && active.type === "activeSelection") {
+                        const group = active.toGroup();
+                        canvas.setActiveObject(group);
+                        canvas.requestRenderAll();
+                        syncObjects(canvas);
+                        setSelectedLayerIds([]);
+                      }
+                    }}
+                    className="rounded-lg bg-purple-300/[0.12] border border-purple-300 px-3 py-1 text-xs font-medium text-purple-200 hover:bg-purple-300/[0.2] transition"
+                    title="Group selected layers (Ctrl+G)"
+                  >
+                    G
+                  </button>
+                )}
+                
+                {/* UnGroup button for grouped objects */}
+                {activeObject?.type === "group" && (
+                  <button
+                    onClick={() => {
+                      const group = canvas.getActiveObject();
+                      if (group && group.type === "group") {
+                        const items = group._objects;
+
+                        group._restoreObjectsState();
+                        canvas.remove(group);
+
+                        items.forEach(obj => canvas.add(obj));
+
+                        canvas.requestRenderAll();
+                        syncObjects(canvas);
+                        setSelectedLayerIds([]);
+                      }
+                    }}
+                    className="rounded-lg bg-orange-300/[0.12] border border-orange-300 px-3 py-1 text-xs font-medium text-orange-200 hover:bg-orange-300/[0.2] transition"
+                    title="Ungroup selected layer (Ctrl+Shift+G)"
+                  >
+                    UG
+                  </button>
+                )}
+                
+                <span className="rounded-lg bg-white/[0.08] px-2 py-1 text-xs text-slate-300">{objects.length}</span>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -350,22 +414,30 @@ export default function RightPanel({ className = "" }) {
               ) : (
                 objects.map((layer) => {
                   const isActive = activeObject?.editorId === layer.id;
+                  const isHovered = hoveredLayerId === layer.id;
+                  const isSelected = selectedLayerIds.includes(layer.id);
 
                   return (
                     <div
                       key={layer.id}
                       className={`flex w-full items-center gap-3 rounded-lg border p-3 text-left transition ${
-                        isActive
+                        isSelected
+                          ? "border-purple-300 bg-purple-300/[0.12]"
+                          : isActive
                           ? "border-teal-200 bg-teal-300/[0.12]"
+                          : isHovered
+                          ? "border-blue-300 bg-blue-300/[0.12]"
                           : "border-white/10 bg-white/[0.04] hover:bg-white/[0.08]"
                       }`}
                     >
                       <button
                         type="button"
-                        onClick={() => selectObjectById(layer.id)}
+                        onClick={(e) => handleLayerClick(e, layer)}
                         className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       >
-                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-800 text-xs font-bold uppercase text-teal-200">
+                        <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold uppercase ${
+                          isHovered ? "bg-blue-800 text-blue-200" : "bg-slate-800 text-teal-200"
+                        }`}>
                           {layer.type?.slice(0, 2) || "ob"}
                         </span>
                         <span className="min-w-0 flex-1">

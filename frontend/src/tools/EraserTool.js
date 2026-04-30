@@ -1,4 +1,4 @@
-import { applyCanvasCursor, getEraserCursor, setCanvasObjectInteractivity } from "../utils/fabricHelpers.js";
+import { applyCanvasCursor, getEraserCursor, setCanvasObjectInteractivity, setCanvasObjectSelection } from "../utils/fabricHelpers.js";
 
 const DEFAULT_ERASER_OPTIONS = {
   size: 24,
@@ -6,9 +6,10 @@ const DEFAULT_ERASER_OPTIONS = {
 };
 
 export default class EraserTool {
-  constructor({ canvas, fabric, onCanvasMutation, onWarning }) {
+  constructor({ canvas, fabric, findImageTargetUnderCursor, onCanvasMutation, onWarning }) {
     this.canvas = canvas;
     this.fabric = fabric;
+    this.findImageTargetUnderCursor = findImageTargetUnderCursor;
     this.onCanvasMutation = onCanvasMutation;
     this.onWarning = onWarning;
     this.options = { ...DEFAULT_ERASER_OPTIONS };
@@ -34,7 +35,7 @@ export default class EraserTool {
 
     this.canvas.selection = false;
     this.canvas.discardActiveObject();
-    setCanvasObjectInteractivity(this.canvas, false);
+    setCanvasObjectSelection(this.canvas, false); // Keep events enabled for hover
 
     const brush = new this.fabric.EraserBrush(this.canvas);
     brush.width = this.options.size || DEFAULT_ERASER_OPTIONS.size;
@@ -43,6 +44,20 @@ export default class EraserTool {
     this.canvas.freeDrawingBrush = brush;
     this.canvas.isDrawingMode = true;
     applyCanvasCursor(this.canvas, getEraserCursor(brush.width));
+
+    // Add mouse down handler to validate target
+    this.mouseDownHandler = (event) => {
+      const target = this.findImageTargetUnderCursor?.(event.e);
+      if (!target) {
+        this.onWarning?.("Click on an image to use Eraser tool.");
+        this.canvas.isDrawingMode = false;
+        setTimeout(() => {
+          this.canvas.isDrawingMode = true;
+        }, 100);
+      }
+    };
+
+    this.canvas.on("mouse:down", this.mouseDownHandler);
 
     this.erasingEndHandler = () => {
       this.onCanvasMutation?.();
@@ -58,8 +73,13 @@ export default class EraserTool {
       this.erasingEndHandler = null;
     }
 
+    if (this.mouseDownHandler) {
+      this.canvas.off("mouse:down", this.mouseDownHandler);
+      this.mouseDownHandler = null;
+    }
+
     this.canvas.isDrawingMode = false;
-    setCanvasObjectInteractivity(this.canvas, true);
+    setCanvasObjectInteractivity(this.canvas, true); // Restore full interactivity
   }
 
   updateOptions(options = {}) {
