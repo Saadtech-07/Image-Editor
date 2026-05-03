@@ -33,7 +33,7 @@ export function assignObjectMeta(fabricObject, name, kind = "object", options = 
     cornerColor: "transparent",
     cornerStrokeColor: "transparent",
     cornerSize: 0,
-    cornerStyle: "circle",
+    cornerStyle: "rect",
     transparentCorners: true,
     hasBorders: true,
     hasControls: false,

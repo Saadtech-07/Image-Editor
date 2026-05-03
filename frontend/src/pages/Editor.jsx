@@ -219,15 +219,19 @@ export default function Editor({ imageUrl }) {
         
         // Always show square outline for all objects
         if (isSelected) {
-          // Selected object gets prominent cyan outline
+          // Selected object gets prominent cyan outline and resize/rotate handles
           object.set({
             borderColor: "#22d3ee",
             cornerColor: "#22d3ee",
             cornerStrokeColor: "#22d3ee",
             cornerSize: 10,
+            cornerStyle: "rect",
             transparentCorners: false,
             hasBorders: true,
             hasControls: true,
+            hasRotatingPoint: true,
+            rotatingPointOffset: 20,
+            borderDashArray: [],
           });
         } else {
           // Non-selected objects get subtle light blue square outline
@@ -546,19 +550,41 @@ export default function Editor({ imageUrl }) {
       setHoveredLayerId(null);
     };
 
+    const selectTargetObject = (target, event) => {
+      if (!target || target.excludeFromLayer) {
+        return false;
+      }
+
+      if (canvas.getActiveObject() === target) {
+        return true;
+      }
+
+      canvas.discardActiveObject();
+      target.set({
+        selectable: true,
+        evented: true,
+      });
+
+      canvas.setActiveObject(target, event);
+      setActiveObject(target);
+      refreshSelectionOutline(target);
+      syncObjects(canvas);
+      canvas.requestRenderAll();
+      return true;
+    };
+
     const handleMouseClick = (event) => {
       const target = canvas.findTarget(event.e);
-      
-      if (target && target.type === "image" && !target.excludeFromLayer && target.editorId) {
-        // Find the layer and select it
-        const layer = objects.find(obj => obj.id === target.editorId);
-        if (layer) {
-          canvas.setActiveObject(target);
-          setActiveObject(target);
-          refreshSelectionOutline(target);
-          syncObjects(canvas);
-        }
+
+      if (selectTargetObject(target, event)) {
+        return;
       }
+
+      canvas.discardActiveObject();
+      setActiveObject(null);
+      refreshSelectionOutline(null);
+      syncObjects(canvas);
+      canvas.requestRenderAll();
     };
 
     canvas.on("selection:created", handleSelection);
@@ -1478,14 +1504,25 @@ export default function Editor({ imageUrl }) {
           return;
         }
         
-        // Set the original image properties to center it
+        // FIX: Calculate proper scaling to fit canvas while maintaining aspect ratio
+        const canvasWidth = canvas.getWidth();
+        const canvasHeight = canvas.getHeight();
+        const imageWidth = originalImage.width;
+        const imageHeight = originalImage.height;
+        
+        // Calculate scale to fit image within canvas
+        const scaleX = canvasWidth / imageWidth;
+        const scaleY = canvasHeight / imageHeight;
+        const scale = Math.min(scaleX, scaleY, 1); // Don't upscale, only downscale if needed
+        
+        // Set the original image properties to center it with proper scaling
         originalImage.set({
-          left: canvas.getWidth() / 2,
-          top: canvas.getHeight() / 2,
+          left: canvasWidth / 2,
+          top: canvasHeight / 2,
           originX: 'center',
           originY: 'center',
-          scaleX: 1,
-          scaleY: 1,
+          scaleX: scale,
+          scaleY: scale,
           angle: 0,
           visible: true,
           selectable: true,
