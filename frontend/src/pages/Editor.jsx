@@ -214,12 +214,28 @@ export default function Editor({ imageUrl }) {
       canvas.getObjects().forEach((object) => {
         const isBaseImage = Boolean(baseImageIdRef.current && object.editorId === baseImageIdRef.current);
         const isSelected = selectedObject === object;
+        const isImage = object.type === "image" && !object.excludeFromLayer;
 
         object.isBaseImage = isBaseImage;
         
         // Always show square outline for all objects
         if (isSelected) {
           // Selected object gets prominent cyan outline and resize/rotate handles
+          object.set({
+            borderColor: "#22d3ee",
+            cornerColor: "#22d3ee",
+            cornerStrokeColor: "#22d3ee",
+            cornerSize: 10,
+            cornerStyle: "rect",
+            transparentCorners: false,
+            hasBorders: true,
+            hasControls: true,
+            hasRotatingPoint: true,
+            rotatingPointOffset: 20,
+            borderDashArray: [],
+          });
+        } else if (isImage && object.hasBeenSelected) {
+          // Previously selected image keeps its resize/rotate controls permanently visible
           object.set({
             borderColor: "#22d3ee",
             cornerColor: "#22d3ee",
@@ -565,6 +581,11 @@ export default function Editor({ imageUrl }) {
         evented: true,
       });
 
+      // Mark image objects as hasBeenSelected to keep controls permanently visible
+      if (target.type === "image" && !target.excludeFromLayer) {
+        target.hasBeenSelected = true;
+      }
+
       canvas.setActiveObject(target, event);
       setActiveObject(target);
       refreshSelectionOutline(target);
@@ -882,6 +903,8 @@ export default function Editor({ imageUrl }) {
     }
 
     const handleObjectModified = () => {
+      const activeObject = canvas.getActiveObject();
+      refreshSelectionOutline(activeObject);
       snapshotCanvas(canvas);
     };
 
@@ -890,7 +913,7 @@ export default function Editor({ imageUrl }) {
     return () => {
       canvas.off("object:modified", handleObjectModified);
     };
-  }, [canvas, snapshotCanvas]);
+  }, [canvas, snapshotCanvas, refreshSelectionOutline]);
 
   const addText = useCallback(
     (options = {}) => {
@@ -1115,6 +1138,7 @@ export default function Editor({ imageUrl }) {
           erasable: true,
           visible: true,
           opacity: 1,
+          hasBeenSelected: true, // Show controls immediately when pasted
         });
 
         image.editorKind = clipboardObjectRef.current.editorKind || "image";
@@ -1187,6 +1211,7 @@ export default function Editor({ imageUrl }) {
           erasable: true,
           visible: true,
           opacity: 1,
+          hasBeenSelected: true, // Show controls immediately when uploaded
         });
 
         addObjectToCanvas(image, { offset: 0, prefix: "Object" });
@@ -1218,6 +1243,7 @@ export default function Editor({ imageUrl }) {
             selectable: true,
             evented: true,
             erasable: true,
+            hasBeenSelected: true, // Show controls immediately when uploaded
           });
           image.setCoords();
 
